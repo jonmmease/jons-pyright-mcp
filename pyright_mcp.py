@@ -60,6 +60,68 @@ async def handle_diagnostics(params: Dict[str, Any]):
     logger.info(f"Received {len(diagnostics)} diagnostics for {uri}")
 
 
+def read_pyright_config(project_root: Path) -> Dict[str, Any]:
+    """Read pyrightconfig.json if it exists."""
+    config_path = project_root / "pyrightconfig.json"
+    if config_path.exists():
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                logger.info(f"Loaded pyrightconfig.json: {config}")
+                return config
+        except Exception as e:
+            logger.warning(f"Failed to read pyrightconfig.json: {e}")
+    return {}
+
+
+def get_python_interpreter(project_root: Path, config: Dict[str, Any]) -> Optional[str]:
+    """Determine the Python interpreter path from config or environment."""
+    # First check if pythonPath is explicitly set in config
+    if "pythonPath" in config:
+        python_path = config["pythonPath"]
+        if not Path(python_path).is_absolute():
+            python_path = str(project_root / python_path)
+        if Path(python_path).exists():
+            logger.info(f"Using Python interpreter from config: {python_path}")
+            return python_path
+        else:
+            logger.warning(f"Python interpreter not found at: {python_path}")
+    
+    # Check for venv configuration
+    if "venv" in config:
+        venv_path = config["venv"]
+        if not Path(venv_path).is_absolute():
+            # Handle venvPath + venv combination
+            if "venvPath" in config:
+                venv_base = Path(config["venvPath"])
+                if not venv_base.is_absolute():
+                    venv_base = project_root / venv_base
+                venv_path = str(venv_base / venv_path)
+            else:
+                venv_path = str(project_root / venv_path)
+        
+        # Try common Python locations in the venv
+        for python_exe in ["bin/python", "bin/python3", "Scripts/python.exe", "Scripts/python3.exe"]:
+            python_path = Path(venv_path) / python_exe
+            if python_path.exists():
+                logger.info(f"Using Python interpreter from venv: {python_path}")
+                return str(python_path)
+        
+        logger.warning(f"Could not find Python interpreter in venv: {venv_path}")
+    
+    # Check for common virtual environment locations
+    for venv_dir in [".venv", "venv", ".pixi/envs/default", ".pixi/envs/dev"]:
+        venv_path = project_root / venv_dir
+        if venv_path.exists():
+            for python_exe in ["bin/python", "bin/python3", "Scripts/python.exe", "Scripts/python3.exe"]:
+                python_path = venv_path / python_exe
+                if python_path.exists():
+                    logger.info(f"Found Python interpreter in {venv_dir}: {python_path}")
+                    return str(python_path)
+    
+    return None
+
+
 @asynccontextmanager
 async def lifespan(mcp: FastMCP):
     """Manage the lifecycle of the pyright client"""
@@ -70,10 +132,13 @@ async def lifespan(mcp: FastMCP):
     logger.info(f"Starting MCP server in project: {project_root}")
     
     # Check if this is a Python project
-    if not any((project_root / f).exists() for f in ["setup.py", "pyproject.toml", "requirements.txt"]):
+    if not any((project_root / f).exists() for f in ["setup.py", "pyproject.toml", "requirements.txt", "pyrightconfig.json"]):
         logger.warning("No Python project files found. Consider creating pyrightconfig.json for better results.")
     
-    pyright = PyrightClient(project_root)
+    # Read pyright configuration
+    pyright_config = read_pyright_config(project_root)
+    
+    pyright = PyrightClient(project_root, pyright_config)
     pyright.on_notification("textDocument/publishDiagnostics", handle_diagnostics)
     
     try:
@@ -132,8 +197,9 @@ class Range:
 class PyrightClient:
     """Thread-based LSP client for pyright"""
     
-    def __init__(self, project_root: Path, pyright_path: Optional[str] = None):
+    def __init__(self, project_root: Path, config: Optional[Dict[str, Any]] = None, pyright_path: Optional[str] = None):
         self.project_root = project_root
+        self.config = config or {}
         self.pyright_path = pyright_path or self._find_pyright()
         self.process: Optional[subprocess.Popen] = None
         self.request_id = 0
@@ -339,8 +405,40 @@ class PyrightClient:
             
             # Handle workspace/configuration request
             if method == 'workspace/configuration':
-                # Return empty configuration for each item requested
-                result = [{}] * len(params.get('items', []))
+                # Build response based on requested configuration sections
+                result = []
+                items = params.get('items', [])
+                
+                for item in items:
+                    section = item.get('section', '')
+                    config_response = {}
+                    
+                    if section == 'python':
+                        # Provide Python interpreter path if we have it
+                        python_path = get_python_interpreter(self.project_root, self.config)
+                        if python_path:
+                            config_response['defaultInterpreterPath'] = python_path
+                            config_response['pythonPath'] = python_path
+                    elif section == 'python.analysis':
+                        # Provide analysis settings
+                        if "extraPaths" in self.config:
+                            extra_paths = self.config["extraPaths"]
+                            # Convert relative paths to absolute
+                            abs_paths = []
+                            for path in extra_paths:
+                                if not Path(path).is_absolute():
+                                    abs_paths.append(str(self.project_root / path))
+                                else:
+                                    abs_paths.append(path)
+                            config_response['extraPaths'] = abs_paths
+                        if "typeCheckingMode" in self.config:
+                            config_response['typeCheckingMode'] = self.config['typeCheckingMode']
+                    elif section == 'pyright':
+                        # Return the full pyright config if requested
+                        config_response = self.config.copy()
+                    
+                    result.append(config_response)
+                
                 await self._send_message({
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -390,6 +488,44 @@ class PyrightClient:
     async def _initialize(self):
         """Send LSP initialize request"""
         logger.debug("Sending initialize request...")
+        
+        # Build initialization options from config
+        init_options = {"python": {"analysis": {}}}
+        
+        # Add analysis settings from config
+        if "typeCheckingMode" in self.config:
+            init_options["python"]["analysis"]["typeCheckingMode"] = self.config["typeCheckingMode"]
+        else:
+            init_options["python"]["analysis"]["typeCheckingMode"] = "basic"
+            
+        init_options["python"]["analysis"]["autoSearchPaths"] = True
+        init_options["python"]["analysis"]["useLibraryCodeForTypes"] = True
+        init_options["python"]["analysis"]["diagnosticMode"] = "workspace"
+        
+        # Add extraPaths if specified
+        if "extraPaths" in self.config:
+            extra_paths = self.config["extraPaths"]
+            # Convert relative paths to absolute
+            abs_paths = []
+            for path in extra_paths:
+                if not Path(path).is_absolute():
+                    abs_paths.append(str(self.project_root / path))
+                else:
+                    abs_paths.append(path)
+            init_options["python"]["analysis"]["extraPaths"] = abs_paths
+        
+        # Try to determine Python interpreter
+        python_path = get_python_interpreter(self.project_root, self.config)
+        if python_path:
+            init_options["python"]["pythonPath"] = python_path
+            logger.info(f"Using Python interpreter: {python_path}")
+        
+        # Add other config options
+        if "pythonVersion" in self.config:
+            init_options["python"]["pythonVersion"] = self.config["pythonVersion"]
+        if "pythonPlatform" in self.config:
+            init_options["python"]["pythonPlatform"] = self.config["pythonPlatform"]
+        
         response = await self.request("initialize", {
             "processId": os.getpid(),
             "clientInfo": {
@@ -462,16 +598,7 @@ class PyrightClient:
                     "configuration": True
                 }
             },
-            "initializationOptions": {
-                "python": {
-                    "analysis": {
-                        "autoSearchPaths": True,
-                        "useLibraryCodeForTypes": True,
-                        "diagnosticMode": "workspace",
-                        "typeCheckingMode": "basic"
-                    }
-                }
-            }
+            "initializationOptions": init_options
         })
         
         logger.info("pyright initialized successfully")
