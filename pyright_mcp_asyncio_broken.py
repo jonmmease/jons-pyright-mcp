@@ -103,7 +103,6 @@ mcp = FastMCP(
 )
 
 
-# Exceptions
 class LSPRequestError(Exception):
     """Raised when an LSP request fails"""
     pass
@@ -119,7 +118,7 @@ class Position:
         return {"line": self.line, "character": self.character}
 
 
-@dataclass  
+@dataclass
 class Range:
     """LSP range in a text document"""
     start: Position
@@ -175,221 +174,41 @@ class PyrightClient:
             # Try to use it with --langserver flag
             return f"{path} --langserver"
             
-        # Last resort: try node-based installation
-        npm_prefix = subprocess.run(
-            ["npm", "prefix", "-g"], 
-            capture_output=True, 
-            text=True
-        ).stdout.strip()
-        
-        if npm_prefix:
-            node_path = Path(npm_prefix) / "lib" / "node_modules" / "pyright" / "langserver.index.js"
-            if node_path.exists():
-                return f"node {node_path} --stdio"
-                
         raise RuntimeError(
-            "pyright not found. Install it with: pip install pyright"
+            "pyright not found. Please install it with 'pip install pyright' or set PYRIGHT_PATH"
         )
         
     async def start(self):
-        """Start the pyright process and initialize communication"""
+        """Start pyright subprocess"""
         if self.process:
-            raise RuntimeError("Already started")
+            return
             
-        # Store event loop for thread-to-async communication
-        self._loop = asyncio.get_running_loop()
-        
         logger.info(f"Starting pyright for project: {self.project_root}")
         logger.info(f"Using pyright command: {self.pyright_path}")
         
-        # Start process with unbuffered output
-        env = os.environ.copy()
-        env['PYTHONUNBUFFERED'] = '1'
-        
         try:
-            self.process = subprocess.Popen(
-                self.pyright_path.split(),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=str(self.project_root),
-                env=env,
-                bufsize=0  # Unbuffered
+            # Split the command if it contains spaces
+            cmd_parts = self.pyright_path.split()
+            
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd_parts,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.project_root)
             )
         except Exception as e:
             raise RuntimeError(f"Failed to start pyright: {e}")
-        
-        # Start reader threads
-        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
-        self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True)
-        self._reader_thread.start()
-        self._stderr_thread.start()
-        
-        # Process messages from queue
-        asyncio.create_task(self._process_messages())
+            
+        # Start background tasks
+        self._reader_task = asyncio.create_task(self._read_loop())
+        asyncio.create_task(self._stderr_reader())
         
         # Initialize LSP connection
         await self._initialize()
         
-    def _reader_loop(self):
-        """Read messages from stdout in a thread"""
-        buffer = b""
-        logger.debug("Reader thread started")
-        
-        while self.process and not self._shutting_down:
-            try:
-                # Read one byte at a time to avoid blocking
-                byte = self.process.stdout.read(1)
-                if not byte:
-                    logger.debug("Reader thread: EOF")
-                    break
-                    
-                buffer += byte
-                
-                # Check for complete message
-                header_end = buffer.find(b"\r\n\r\n")
-                if header_end == -1:
-                    continue
-                    
-                # Parse header
-                header = buffer[:header_end].decode('utf-8')
-                content_length = None
-                for line in header.split('\r\n'):
-                    if line.startswith('Content-Length: '):
-                        content_length = int(line[16:])
-                        break
-                        
-                if content_length is None:
-                    buffer = buffer[header_end + 4:]
-                    continue
-                    
-                # Read content
-                content_start = header_end + 4
-                while len(buffer) < content_start + content_length:
-                    chunk = self.process.stdout.read(
-                        min(4096, content_start + content_length - len(buffer))
-                    )
-                    if not chunk:
-                        return
-                    buffer += chunk
-                    
-                # Extract message
-                content = buffer[content_start:content_start + content_length]
-                buffer = buffer[content_start + content_length:]
-                
-                try:
-                    message = json.loads(content.decode('utf-8'))
-                    # Put message in queue for async processing
-                    method_or_id = message.get('method', f"response id={message.get('id')}")
-                    logger.debug(f"Reader thread: queuing message {method_or_id}")
-                    self._message_queue.put(message)
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse JSON: {e}")
-                    
-            except Exception as e:
-                if not self._shutting_down:
-                    logger.error(f"Error in reader thread: {e}")
-                break
-                
-    def _stderr_loop(self):
-        """Read stderr in a thread"""
-        while self.process and self.process.stderr and not self._shutting_down:
-            try:
-                line = self.process.stderr.readline()
-                if line:
-                    decoded = line.decode().strip()
-                    if "error" in decoded.lower() or "panic" in decoded.lower():
-                        logger.error(f"pyright stderr: {decoded}")
-                    else:
-                        logger.info(f"pyright stderr: {decoded}")
-                else:
-                    break
-            except Exception:
-                break
-                
-    async def _process_messages(self):
-        """Process messages from the queue"""
-        logger.debug("Message processor started")
-        while not self._shutting_down:
-            try:
-                # Use a simple approach - check if queue has items
-                if not self._message_queue.empty():
-                    message = self._message_queue.get_nowait()
-                    logger.debug(f"Processing message from queue: {message.get('method', 'response')}")
-                    await self._handle_message(message)
-                else:
-                    # Small sleep to avoid busy waiting
-                    await asyncio.sleep(0.01)
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Error processing message: {e}")
-                
-    async def _handle_message(self, message: Dict[str, Any]):
-        """Handle incoming LSP message"""
-        logger.debug(f"Received: {message}")
-        
-        if 'id' in message and 'method' in message:
-            # Request from server to client
-            request_id = message['id']
-            method = message['method']
-            params = message.get('params', {})
-            
-            logger.debug(f"Server request: {method} (id={request_id})")
-            
-            # Handle workspace/configuration request
-            if method == 'workspace/configuration':
-                # Return empty configuration for each item requested
-                result = [{}] * len(params.get('items', []))
-                await self._send_message({
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": result
-                })
-            else:
-                # Send error response for unsupported methods
-                await self._send_message({
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Method not supported: {method}"
-                    }
-                })
-        elif 'id' in message:
-            # Response to our request
-            request_id = message['id']
-            future = self.pending_requests.pop(request_id, None)
-            
-            if future and not future.done():
-                if 'error' in message:
-                    error = message['error']
-                    future.set_exception(
-                        LSPRequestError(f"{error.get('message', 'Unknown error')} (code: {error.get('code')})")
-                    )
-                else:
-                    future.set_result(message.get('result'))
-        else:
-            # Server notification
-            method = message.get('method', '')
-            params = message.get('params', {})
-            
-            handler = self.notification_handlers.get(method)
-            if handler:
-                try:
-                    # Check if handler is async
-                    if asyncio.iscoroutinefunction(handler):
-                        await handler(params)
-                    else:
-                        handler(params)
-                except Exception as e:
-                    logger.error(f"Error in notification handler for {method}: {e}")
-            else:
-                logger.debug(f"Unhandled notification: {method}")
-                
     async def _initialize(self):
         """Send LSP initialize request"""
-        logger.debug("Sending initialize request...")
         response = await self.request("initialize", {
             "processId": os.getpid(),
             "clientInfo": {
@@ -443,12 +262,19 @@ class PyrightClient:
                                 ]
                             }
                         },
-                        "resolveSupport": {"properties": ["edit"]}
+                        "resolveSupport": {
+                            "properties": ["edit"]
+                        }
                     },
-                    "publishDiagnostics": {"relatedInformation": True},
+                    "publishDiagnostics": {
+                        "relatedInformation": True
+                    },
                     "callHierarchy": {},
                     "semanticTokens": {
-                        "requests": {"full": True, "range": True},
+                        "requests": {
+                            "full": True,
+                            "range": True
+                        },
                         "tokenTypes": [],
                         "tokenModifiers": [],
                         "formats": ["relative"]
@@ -475,162 +301,297 @@ class PyrightClient:
         })
         
         logger.info("pyright initialized successfully")
+        self._initialized = True
         
         # Send initialized notification
         await self.notify("initialized", {})
         
-        self._initialized = True
+        return response
         
-    async def request(self, method: str, params: Any = None) -> Any:
+    async def request(self, method: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """Send request and wait for response"""
-        if not self.process:
-            raise RuntimeError("Not started")
+        if self._shutting_down:
+            raise LSPRequestError("Client is shutting down")
             
-        request_id = self.request_id
         self.request_id += 1
+        request_id = self.request_id
         
-        logger.debug(f"Creating request {method} with id {request_id}")
+        message = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params or {}
+        }
         
         # Create future for response
         future = asyncio.Future()
         self.pending_requests[request_id] = future
         
         # Send request
-        await self._send_message({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": params or {}
-        })
+        await self._send_message(message)
         
         # Wait for response with timeout
         try:
-            logger.debug(f"Waiting for response to {method} (id={request_id})")
-            result = await asyncio.wait_for(future, timeout=self.request_timeout)
-            logger.debug(f"Got response for {method} (id={request_id}): {result}")
-            return result
+            return await asyncio.wait_for(future, timeout=self.request_timeout)
         except asyncio.TimeoutError:
             self.pending_requests.pop(request_id, None)
-            logger.error(f"Request {method} (id={request_id}) timed out. Pending requests: {list(self.pending_requests.keys())}")
             raise LSPRequestError(f"Request {method} timed out after {self.request_timeout}s")
             
-    async def notify(self, method: str, params: Any = None):
+    async def notify(self, method: str, params: Optional[Dict[str, Any]] = None):
         """Send notification (no response expected)"""
-        await self._send_message({
+        if self._shutting_down:
+            return
+            
+        message = {
             "jsonrpc": "2.0",
             "method": method,
             "params": params or {}
-        })
+        }
+        await self._send_message(message)
         
     async def _send_message(self, message: Dict[str, Any]):
-        """Send message to pyright"""
+        """Send LSP message with proper headers"""
         if not self.process or not self.process.stdin:
-            raise RuntimeError("Process not running")
+            raise LSPRequestError("Process not started")
             
-        content = json.dumps(message).encode('utf-8')
-        header = f"Content-Length: {len(content)}\r\n\r\n".encode('utf-8')
+        content = json.dumps(message, separators=(',', ':'))
+        content_bytes = content.encode('utf-8')
         
-        # Thread-safe write
-        with self._writer_lock:
-            self.process.stdin.write(header + content)
-            self.process.stdin.flush()
-            
+        header = f"Content-Length: {len(content_bytes)}\r\n\r\n"
+        
+        self.process.stdin.write(header.encode('utf-8'))
+        self.process.stdin.write(content_bytes)
+        await self.process.stdin.drain()
+        
         logger.debug(f"Sent: {message}")
         
+    async def _read_loop(self):
+        """Read messages from pyright"""
+        reader = self.process.stdout
+        
+        while self.process and reader and not self._shutting_down:
+            try:
+                # Read headers line by line until we get empty line
+                headers = []
+                while True:
+                    line = await reader.readline()
+                    if not line:
+                        return  # EOF
+                    
+                    line = line.decode('utf-8').rstrip('\r\n')
+                    if not line:
+                        break  # Empty line, headers done
+                    headers.append(line)
+                
+                # Parse Content-Length
+                content_length = None
+                for header in headers:
+                    if header.startswith('Content-Length: '):
+                        content_length = int(header[16:])
+                        break
+                
+                if content_length is None:
+                    logger.error("No Content-Length header found")
+                    continue
+                
+                # Read exact content length
+                content = await reader.readexactly(content_length)
+                
+                # Parse JSON
+                try:
+                    message = json.loads(content.decode('utf-8'))
+                    await self._handle_message(message)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse JSON: {e}")
+                    
+            except asyncio.IncompleteReadError:
+                # Connection closed
+                break
+            except Exception as e:
+                logger.error(f"Error in read loop: {e}", exc_info=True)
+                break
+                
+    def _parse_message(self, buffer: bytes) -> tuple[Optional[Dict], bytes]:
+        """Parse LSP message from buffer"""
+        # Look for Content-Length header
+        header_end = buffer.find(b"\r\n\r\n")
+        if header_end == -1:
+            return None, buffer
+            
+        header = buffer[:header_end].decode('utf-8')
+        content_start = header_end + 4
+        
+        # Extract content length
+        content_length = None
+        for line in header.split('\r\n'):
+            if line.startswith('Content-Length: '):
+                content_length = int(line[16:])
+                break
+                
+        if content_length is None:
+            return None, buffer
+            
+        # Check if we have complete content
+        if len(buffer) < content_start + content_length:
+            return None, buffer
+            
+        # Extract and parse content
+        content = buffer[content_start:content_start + content_length]
+        try:
+            message = json.loads(content.decode('utf-8'))
+            remaining = buffer[content_start + content_length:]
+            return message, remaining
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON: {e}")
+            return None, buffer[content_start + content_length:]
+            
+    async def _handle_message(self, message: Dict[str, Any]):
+        """Handle incoming LSP message"""
+        logger.debug(f"Received: {message}")
+        
+        if 'id' in message:
+            # Response to our request
+            request_id = message['id']
+            future = self.pending_requests.pop(request_id, None)
+            
+            if future and not future.done():
+                if 'error' in message:
+                    error = message['error']
+                    future.set_exception(
+                        LSPRequestError(f"{error.get('message', 'Unknown error')} (code: {error.get('code')})")
+                    )
+                else:
+                    future.set_result(message.get('result'))
+        else:
+            # Server notification
+            method = message.get('method', '')
+            params = message.get('params', {})
+            
+            handler = self.notification_handlers.get(method)
+            if handler:
+                try:
+                    await handler(params)
+                except Exception as e:
+                    logger.error(f"Error in notification handler for {method}: {e}")
+            else:
+                logger.debug(f"Unhandled notification: {method}")
+                
+    async def _stderr_reader(self):
+        """Read stderr output from pyright"""
+        while self.process and self.process.stderr and not self._shutting_down:
+            try:
+                line = await self.process.stderr.readline()
+                if line:
+                    decoded = line.decode().strip()
+                    # Log at INFO level so we can see errors during testing
+                    if "error" in decoded.lower() or "panic" in decoded.lower():
+                        logger.error(f"pyright stderr: {decoded}")
+                    else:
+                        logger.info(f"pyright stderr: {decoded}")
+                else:
+                    break
+            except Exception:
+                break
+                
     def on_notification(self, method: str, handler: Callable):
         """Register notification handler"""
         self.notification_handlers[method] = handler
         
     async def shutdown(self):
-        """Shutdown the language server"""
-        if not self.process:
+        """Properly shutdown pyright"""
+        if not self.process or self._shutting_down:
             return
             
-        logger.debug("Starting shutdown...")
+        self._shutting_down = True
         
         try:
-            # Send shutdown request first
-            shutdown_result = await self.request("shutdown", {})
-            logger.debug(f"Shutdown response: {shutdown_result}")
-            
-            # Then mark as shutting down to stop message processing
-            self._shutting_down = True
+            # Send shutdown request
+            await self.request("shutdown")
             
             # Send exit notification
-            await self.notify("exit", {})
+            await self.notify("exit")
             
-            # Give it a moment to exit cleanly
-            await asyncio.sleep(0.5)
+            # Wait for process to exit
+            await asyncio.wait_for(self.process.wait(), timeout=5.0)
+            
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
-            self._shutting_down = True
-            
-        # Terminate process if still running
-        if self.process.poll() is None:
-            logger.debug("Process still running, terminating...")
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.debug("Process didn't terminate, killing...")
-                self.process.kill()
-                self.process.wait()
+            if self.process:
+                self.process.terminate()
+                await self.process.wait()
                 
-        self.process = None
-        self._initialized = False
-        logger.debug("Shutdown complete")
+        finally:
+            # Cancel reader task
+            if self._reader_task:
+                self._reader_task.cancel()
+                try:
+                    await self._reader_task
+                except asyncio.CancelledError:
+                    pass
+                    
+            self.process = None
+            self._initialized = False
+            self._shutting_down = False
 
 
-# Helper functions
+
+
 def ensure_file_uri(file_path: str) -> str:
-    """Ensure file path is a proper file URI"""
+    """Convert file path to proper file URI"""
     if file_path.startswith("file://"):
         return file_path
     
-    path = Path(file_path).absolute()
-    return f"file://{path}"
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    
+    return f"file://{path.absolute()}"
 
 
 def ensure_pyright() -> PyrightClient:
-    """Ensure pyright is initialized and return the client"""
-    if not pyright:
+    """Ensure pyright is initialized"""
+    if not pyright or not pyright._initialized:
         raise RuntimeError("pyright is not initialized")
-    if not pyright._initialized:
-        if initialization_complete:
-            raise RuntimeError("pyright client is not properly initialized")
-        else:
-            raise RuntimeError("pyright is still initializing")
+    if not initialization_complete:
+        raise RuntimeError("pyright is still initializing, please try again in a few seconds")
     return pyright
 
 
 async def ensure_file_open(client: PyrightClient, file_path: str, file_uri: str) -> bool:
-    """Ensure file is open in pyright."""
+    """Ensure file is opened in pyright"""
+    global opened_files
+    
     if file_uri in opened_files:
         return True
         
-    try:
-        # Read file content
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            
-        # Send didOpen notification
-        await client.notify("textDocument/didOpen", {
-            "textDocument": {
-                "uri": file_uri,
-                "languageId": "python",
-                "version": 1,
-                "text": content
-            }
-        })
-        
-        opened_files.add(file_uri)
-        return True
-    except Exception as e:
-        logger.error(f"Failed to open file {file_path}: {e}")
-        return False
+    # Open the file in pyright if it exists
+    file_path_obj = Path(file_path)
+    if not file_path_obj.is_absolute():
+        file_path_obj = Path.cwd() / file_path_obj
+    
+    if file_path_obj.exists():
+        try:
+            content = file_path_obj.read_text()
+            await client.notify("textDocument/didOpen", {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "python",
+                    "version": 1,
+                    "text": content
+                }
+            })
+            opened_files.add(file_uri)
+            # Give pyright a moment to process the file
+            await asyncio.sleep(0.2)
+            return True
+        except Exception as e:
+            logger.warning(f"Could not open file {file_path}: {e}")
+            return False
+    return False
 
 
-# Core Language Features
+# MCP Tools - Core Language Features
+
 @mcp.tool
 async def hover(file_path: str, line: int, character: int, ctx: Context) -> Dict[str, Any]:
     """Get hover information at the specified position in a Python file.
@@ -652,8 +613,7 @@ async def hover(file_path: str, line: int, character: int, ctx: Context) -> Dict
     
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Getting hover info at {file_path}:{line}:{character}")
+    await ctx.info(f"Getting hover info at {file_path}:{line}:{character}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
@@ -689,8 +649,7 @@ async def completion(file_path: str, line: int, character: int, ctx: Context) ->
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Getting completions at {file_path}:{line}:{character}")
+    await ctx.info(f"Getting completions at {file_path}:{line}:{character}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
@@ -700,11 +659,11 @@ async def completion(file_path: str, line: int, character: int, ctx: Context) ->
         "position": {"line": line, "character": character}
     })
     
-    # Response can be either CompletionList or CompletionItem[]
-    if isinstance(response, dict) and "items" in response:
-        return response["items"]
-    elif isinstance(response, list):
+    # Handle both array and CompletionList responses
+    if isinstance(response, list):
         return response
+    elif isinstance(response, dict) and "items" in response:
+        return response["items"]
     else:
         return []
 
@@ -724,16 +683,17 @@ async def definition(file_path: str, line: int, character: int, ctx: Context) ->
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Finding definition at {file_path}:{line}:{character}")
+    await ctx.info(f"Finding definition at {file_path}:{line}:{character}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/definition", {
+    response = await client.request("textDocument/definition", {
         "textDocument": {"uri": file_uri},
         "position": {"line": line, "character": character}
     })
+    
+    return response or {"message": "No definition found"}
 
 
 @mcp.tool
@@ -751,16 +711,17 @@ async def type_definition(file_path: str, line: int, character: int, ctx: Contex
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Finding type definition at {file_path}:{line}:{character}")
+    await ctx.info(f"Finding type definition at {file_path}:{line}:{character}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/typeDefinition", {
+    response = await client.request("textDocument/typeDefinition", {
         "textDocument": {"uri": file_uri},
         "position": {"line": line, "character": character}
     })
+    
+    return response or {"message": "No type definition found"}
 
 
 @mcp.tool
@@ -778,25 +739,21 @@ async def implementation(file_path: str, line: int, character: int, ctx: Context
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Finding implementations at {file_path}:{line}:{character}")
+    await ctx.info(f"Finding implementations at {file_path}:{line}:{character}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/implementation", {
+    response = await client.request("textDocument/implementation", {
         "textDocument": {"uri": file_uri},
         "position": {"line": line, "character": character}
     })
+    
+    return response or {"message": "No implementations found"}
 
 
 @mcp.tool
-async def references(
-    file_path: str, 
-    line: int, 
-    character: int, 
-    include_declaration: bool = True
-) -> List[Dict[str, Any]]:
+async def references(file_path: str, line: int, character: int, include_declaration: bool = True, ctx: Context = None) -> List[Dict[str, Any]]:
     """Find all references to the symbol at the specified position.
     
     Args:
@@ -811,14 +768,19 @@ async def references(
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
+    if ctx:
+        await ctx.info(f"Finding references at {file_path}:{line}:{character}")
+    
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/references", {
+    response = await client.request("textDocument/references", {
         "textDocument": {"uri": file_uri},
         "position": {"line": line, "character": character},
         "context": {"includeDeclaration": include_declaration}
     })
+    
+    return response or []
 
 
 @mcp.tool
@@ -834,15 +796,16 @@ async def document_symbols(file_path: str, ctx: Context) -> List[Dict[str, Any]]
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Getting document symbols for {file_path}")
+    await ctx.info(f"Getting document symbols for {file_path}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/documentSymbol", {
+    response = await client.request("textDocument/documentSymbol", {
         "textDocument": {"uri": file_uri}
     })
+    
+    return response or []
 
 
 @mcp.tool
@@ -857,15 +820,17 @@ async def workspace_symbols(query: str, ctx: Context) -> List[Dict[str, Any]]:
     """
     client = ensure_pyright()
     
-    if ctx:
-        await ctx.info(f"Searching workspace for symbols matching '{query}'")
+    await ctx.info(f"Searching workspace symbols: {query}")
     
-    return await client.request("workspace/symbol", {
+    response = await client.request("workspace/symbol", {
         "query": query
     })
+    
+    return response or []
 
 
-# Code Intelligence
+# MCP Tools - Code Intelligence
+
 @mcp.tool
 async def diagnostics(file_path: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
     """Get current diagnostics (errors, warnings) for file(s).
@@ -878,26 +843,18 @@ async def diagnostics(file_path: Optional[str] = None) -> Dict[str, List[Dict[st
     """
     if file_path:
         file_uri = ensure_file_uri(file_path)
-        # Ensure file is open
+        # Ensure file is open to get latest diagnostics
         client = ensure_pyright()
         await ensure_file_open(client, file_path, file_uri)
-        
-        # Return diagnostics for specific file
+        # Wait a bit for diagnostics to update
+        await asyncio.sleep(0.5)
         return {file_uri: current_diagnostics.get(file_uri, [])}
     else:
-        # Return all diagnostics
-        return current_diagnostics.copy()
+        return current_diagnostics
 
 
 @mcp.tool
-async def code_actions(
-    file_path: str,
-    start_line: int,
-    start_char: int, 
-    end_line: int,
-    end_char: int,
-    ctx: Context
-) -> List[Dict[str, Any]]:
+async def code_actions(file_path: str, start_line: int, start_char: int, end_line: int, end_char: int, ctx: Context) -> List[Dict[str, Any]]:
     """Get available code actions (fixes, refactorings) for a range.
     
     Args:
@@ -913,8 +870,7 @@ async def code_actions(
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Getting code actions for {file_path}")
+    await ctx.info(f"Getting code actions for {file_path}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
@@ -922,7 +878,7 @@ async def code_actions(
     # Get diagnostics for this range
     file_diagnostics = current_diagnostics.get(file_uri, [])
     
-    return await client.request("textDocument/codeAction", {
+    response = await client.request("textDocument/codeAction", {
         "textDocument": {"uri": file_uri},
         "range": {
             "start": {"line": start_line, "character": start_char},
@@ -932,16 +888,12 @@ async def code_actions(
             "diagnostics": file_diagnostics
         }
     })
+    
+    return response or []
 
 
 @mcp.tool
-async def rename(
-    file_path: str,
-    line: int,
-    character: int,
-    new_name: str,
-    ctx: Context
-) -> Dict[str, Any]:
+async def rename(file_path: str, line: int, character: int, new_name: str, ctx: Context) -> Dict[str, Any]:
     """Rename a symbol and all its references.
     
     Args:
@@ -956,27 +908,32 @@ async def rename(
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Renaming symbol at {file_path}:{line}:{character} to '{new_name}'")
+    await ctx.info(f"Renaming symbol at {file_path}:{line}:{character} to '{new_name}'")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    # First check if rename is possible at this position
-    prepare_result = await client.request("textDocument/prepareRename", {
-        "textDocument": {"uri": file_uri},
-        "position": {"line": line, "character": character}
-    })
-    
-    if not prepare_result:
+    # First check if rename is valid
+    try:
+        prepare_result = await client.request("textDocument/prepareRename", {
+            "textDocument": {"uri": file_uri},
+            "position": {"line": line, "character": character}
+        })
+        
+        if not prepare_result:
+            return {"error": "Cannot rename at this position"}
+            
+    except LSPRequestError:
         return {"error": "Cannot rename at this position"}
     
     # Perform rename
-    return await client.request("textDocument/rename", {
+    response = await client.request("textDocument/rename", {
         "textDocument": {"uri": file_uri},
         "position": {"line": line, "character": character},
         "newName": new_name
     })
+    
+    return response or {"changes": {}}
 
 
 @mcp.tool
@@ -992,15 +949,16 @@ async def semantic_tokens(file_path: str, ctx: Context) -> Dict[str, Any]:
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Getting semantic tokens for {file_path}")
+    await ctx.info(f"Getting semantic tokens for {file_path}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/semanticTokens/full", {
+    response = await client.request("textDocument/semanticTokens/full", {
         "textDocument": {"uri": file_uri}
     })
+    
+    return response or {"data": []}
 
 
 @mcp.tool
@@ -1018,25 +976,23 @@ async def signature_help(file_path: str, line: int, character: int, ctx: Context
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Getting signature help at {file_path}:{line}:{character}")
+    await ctx.info(f"Getting signature help at {file_path}:{line}:{character}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/signatureHelp", {
+    response = await client.request("textDocument/signatureHelp", {
         "textDocument": {"uri": file_uri},
         "position": {"line": line, "character": character}
     })
+    
+    return response or {"signatures": []}
 
 
-# Formatting
+# MCP Tools - Formatting
+
 @mcp.tool
-async def format_document(
-    file_path: str,
-    tab_size: int = 4,
-    insert_spaces: bool = True
-) -> List[Dict[str, Any]]:
+async def format_document(file_path: str, tab_size: int = 4, insert_spaces: bool = True, ctx: Context = None) -> List[Dict[str, Any]]:
     """Format an entire Python document.
     
     Args:
@@ -1050,28 +1006,26 @@ async def format_document(
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
+    if ctx:
+        await ctx.info(f"Formatting {file_path}")
+    
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/formatting", {
+    response = await client.request("textDocument/formatting", {
         "textDocument": {"uri": file_uri},
         "options": {
             "tabSize": tab_size,
             "insertSpaces": insert_spaces
         }
     })
+    
+    return response or []
 
 
 @mcp.tool
-async def format_range(
-    file_path: str,
-    start_line: int,
-    start_char: int,
-    end_line: int,
-    end_char: int,
-    tab_size: int = 4,
-    insert_spaces: bool = True
-) -> List[Dict[str, Any]]:
+async def format_range(file_path: str, start_line: int, start_char: int, end_line: int, end_char: int, 
+                      tab_size: int = 4, insert_spaces: bool = True, ctx: Context = None) -> List[Dict[str, Any]]:
     """Format a range in a Python document.
     
     Args:
@@ -1089,10 +1043,13 @@ async def format_range(
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
+    if ctx:
+        await ctx.info(f"Formatting range in {file_path}")
+    
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/rangeFormatting", {
+    response = await client.request("textDocument/rangeFormatting", {
         "textDocument": {"uri": file_uri},
         "range": {
             "start": {"line": start_line, "character": start_char},
@@ -1103,9 +1060,10 @@ async def format_range(
             "insertSpaces": insert_spaces
         }
     })
+    
+    return response or []
 
 
-# pyright Extensions
 @mcp.tool
 async def organize_imports(file_path: str, ctx: Context) -> List[Dict[str, Any]]:
     """Organize imports in a Python file according to PEP 8.
@@ -1119,23 +1077,27 @@ async def organize_imports(file_path: str, ctx: Context) -> List[Dict[str, Any]]
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Organizing imports in {file_path}")
+    await ctx.info(f"Organizing imports in {file_path}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    # Execute organize imports command
     response = await client.request("workspace/executeCommand", {
         "command": "pyright.organizeimports",
         "arguments": [file_uri]
     })
     
-    # Extract edits from response
+    # The response might be a WorkspaceEdit or direct edits
     if isinstance(response, dict) and "changes" in response:
+        # Extract edits for the file
         return response["changes"].get(file_uri, [])
-    return []
+    elif isinstance(response, list):
+        return response
+    else:
+        return []
 
+
+# MCP Tools - pyright Extensions
 
 @mcp.tool
 async def add_import(file_path: str, line: int, character: int, ctx: Context) -> Dict[str, Any]:
@@ -1152,14 +1114,13 @@ async def add_import(file_path: str, line: int, character: int, ctx: Context) ->
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
     
-    if ctx:
-        await ctx.info(f"Adding import for symbol at {file_path}:{line}:{character}")
+    await ctx.info(f"Adding import at {file_path}:{line}:{character}")
     
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    # Get code actions at this position
-    actions = await client.request("textDocument/codeAction", {
+    # Get code actions at position
+    response = await client.request("textDocument/codeAction", {
         "textDocument": {"uri": file_uri},
         "range": {
             "start": {"line": line, "character": character},
@@ -1171,12 +1132,10 @@ async def add_import(file_path: str, line: int, character: int, ctx: Context) ->
     })
     
     # Find add import action
-    for action in actions:
+    for action in response or []:
         if action.get("kind") == "quickfix" and "import" in action.get("title", "").lower():
-            # Return the edit from this action
-            if "edit" in action:
-                return action["edit"]
-                
+            return action.get("edit", {})
+    
     return {"error": "No import action available"}
 
 
@@ -1193,26 +1152,25 @@ async def create_config(ctx: Context) -> str:
         return "pyrightconfig.json already exists"
     
     config = {
-        "include": ["**/*.py"],
-        "exclude": ["**/node_modules", "**/__pycache__", "**/.*"],
-        "defineConstant": {"DEBUG": True},
+        "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/vscode-pyright/schemas/pyrightconfig.schema.json",
+        "include": ["src"],
+        "exclude": [
+            "**/node_modules",
+            "**/__pycache__",
+            "**/.*"
+        ],
         "typeCheckingMode": "basic",
         "pythonVersion": "3.10",
-        "pythonPlatform": "Linux",
-        "executionEnvironments": [
-            {
-                "root": "."
-            }
-        ]
+        "venvPath": ".",
+        "venv": ".venv"
     }
     
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
-        
-    if ctx:
-        await ctx.info("Created pyrightconfig.json")
-        
-    return "Created pyrightconfig.json"
+    try:
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+        return "Created pyrightconfig.json"
+    except Exception as e:
+        return f"Failed to create config: {e}"
 
 
 @mcp.tool
@@ -1222,35 +1180,49 @@ async def restart_server(ctx: Context) -> str:
     Returns:
         Status message
     """
-    global pyright
+    global pyright, opened_files, initialization_complete
     
     if not pyright:
         return "pyright server is not running"
+    
+    await ctx.info("Restarting pyright server")
+    
+    try:
+        # Mark as not initialized
+        initialization_complete = False
         
-    if ctx:
-        await ctx.info("Restarting pyright server...")
+        # Clear opened files cache
+        opened_files.clear()
         
-    # Shutdown existing server
-    await pyright.shutdown()
-    
-    # Start new server
-    project_root = pyright.project_root
-    pyright = PyrightClient(project_root)
-    pyright.on_notification("textDocument/publishDiagnostics", handle_diagnostics)
-    
-    await pyright.start()
-    
-    return "pyright server restarted successfully"
+        # Shutdown existing server
+        await pyright.shutdown()
+        
+        # Start new server
+        pyright = PyrightClient(Path.cwd())
+        pyright.on_notification("textDocument/publishDiagnostics", handle_diagnostics)
+        await pyright.start()
+        
+        # Give pyright time to analyze
+        await asyncio.sleep(2.0)
+        initialization_complete = True
+        
+        return "pyright server restarted successfully"
+    except Exception as e:
+        return f"Failed to restart server: {e}"
+
+
+# Signal handling for graceful shutdown
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"Received signal {signum}, shutting down...")
+    sys.exit(0)
 
 
 # Main entry point
 if __name__ == "__main__":
-    # Handle keyboard interrupt gracefully
-    def signal_handler(sig, frame):
-        logger.info("Received interrupt signal, shutting down...")
-        sys.exit(0)
-    
+    # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    # Run the server
+    # Run the MCP server
     mcp.run()

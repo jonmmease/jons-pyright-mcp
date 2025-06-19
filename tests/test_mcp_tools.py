@@ -114,6 +114,7 @@ class TestCoreLanguageFeatures:
     async def test_hover_still_initializing(self):
         """Test hover tool when pyright is still initializing."""
         mock_client = create_mock_client()
+        mock_client._initialized = False  # Mark as not initialized
         
         pyright_mcp.pyright = mock_client
         pyright_mcp.initialization_complete = False
