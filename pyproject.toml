@@ -1,0 +1,57 @@
+[project]
+name = "pyright-mcp"
+version = "0.1.0"
+description = "FastMCP server exposing pyright LSP features"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=0.3.0",
+    "pyright>=1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-timeout>=2.1.0",
+    "pytest-cov>=4.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--timeout=60",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+
+[tool.coverage.run]
+source = ["pyright_mcp"]
+omit = ["tests/*", "*/test_*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+
+[tool.pyright]
+include = ["pyright_mcp.py", "tests"]
+exclude = ["**/__pycache__"]
+typeCheckingMode = "basic"
+pythonVersion = "3.10"
+reportMissingImports = true
+reportMissingTypeStubs = false

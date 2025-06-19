@@ -1,0 +1,10 @@
+pyproject.toml
+pyright_mcp.py
+pyright_mcp.egg-info/PKG-INFO
+pyright_mcp.egg-info/SOURCES.txt
+pyright_mcp.egg-info/dependency_links.txt
+pyright_mcp.egg-info/requires.txt
+pyright_mcp.egg-info/top_level.txt
+tests/test_integration.py
+tests/test_lsp_client.py
+tests/test_mcp_tools.py
