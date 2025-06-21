@@ -802,16 +802,31 @@ async def hover(file_path: str, line: int, character: int, ctx: Context) -> Dict
 
 
 @mcp.tool
-async def completion(file_path: str, line: int, character: int, ctx: Context) -> List[Dict[str, Any]]:
+async def completion(
+    file_path: str, 
+    line: int, 
+    character: int, 
+    ctx: Context,
+    limit: int = 50,
+    offset: int = 0
+) -> Dict[str, Any]:
     """Get code completions at the specified position.
     
     Args:
         file_path: Path to the Python file
         line: Zero-based line number
         character: Zero-based character offset in the line
+        limit: Maximum items to return (default: 50)
+        offset: Number of items to skip for pagination (default: 0)
         
     Returns:
-        List of completion items with labels, kinds, and documentation
+        Dictionary with:
+        - items: List of completion items with absolute offsets
+        - totalItems: Total number of completions found
+        - offset: Current offset
+        - limit: Current limit
+        - hasMore: Whether there are more items
+        - nextOffset: Offset for next page (if hasMore is True)
     """
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
@@ -828,12 +843,44 @@ async def completion(file_path: str, line: int, character: int, ctx: Context) ->
     })
     
     # Response can be either CompletionList or CompletionItem[]
+    completions = []
     if isinstance(response, dict) and "items" in response:
-        return response["items"]
+        completions = response["items"]
     elif isinstance(response, list):
-        return response
-    else:
-        return []
+        completions = response
+    
+    # Sort completions for stable ordering
+    def sort_key(item):
+        # Prioritize by sortText if available, otherwise by label
+        return (item.get("sortText", item.get("label", "")), item.get("label", ""))
+    
+    completions.sort(key=sort_key)
+    
+    # Apply pagination
+    total_items = len(completions)
+    
+    # Apply offset and limit
+    start_idx = min(offset, total_items)
+    end_idx = min(start_idx + limit, total_items)
+    paginated_items = completions[start_idx:end_idx]
+    
+    # Check if there are more items
+    has_more = end_idx < total_items
+    
+    # Add absolute offset to each item
+    processed_items = []
+    for i, item in enumerate(paginated_items):
+        processed_item = {**item, "offset": start_idx + i}
+        processed_items.append(processed_item)
+    
+    return {
+        "items": processed_items,
+        "totalItems": total_items,
+        "offset": offset,
+        "limit": limit,
+        "hasMore": has_more,
+        "nextOffset": end_idx if has_more else None
+    }
 
 
 @mcp.tool
@@ -922,8 +969,10 @@ async def references(
     file_path: str, 
     line: int, 
     character: int, 
-    include_declaration: bool = True
-) -> List[Dict[str, Any]]:
+    include_declaration: bool = True,
+    limit: int = 50,
+    offset: int = 0
+) -> Dict[str, Any]:
     """Find all references to the symbol at the specified position.
     
     Args:
@@ -931,9 +980,17 @@ async def references(
         line: Zero-based line number
         character: Zero-based character offset in the line
         include_declaration: Whether to include the declaration itself
+        limit: Maximum items to return (default: 50)
+        offset: Number of items to skip for pagination (default: 0)
         
     Returns:
-        List of reference locations
+        Dictionary with:
+        - items: List of reference locations with absolute offsets
+        - totalItems: Total number of references found
+        - offset: Current offset
+        - limit: Current limit
+        - hasMore: Whether there are more items
+        - nextOffset: Offset for next page (if hasMore is True)
     """
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
@@ -941,22 +998,73 @@ async def references(
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/references", {
+    # Get all references
+    references = await client.request("textDocument/references", {
         "textDocument": {"uri": file_uri},
         "position": {"line": line, "character": character},
         "context": {"includeDeclaration": include_declaration}
     })
+    
+    # Handle empty response
+    if not references:
+        references = []
+    
+    # Sort references for stable ordering
+    def sort_key(ref):
+        return (ref.get("uri", ""), ref.get("range", {}).get("start", {}).get("line", 0), 
+                ref.get("range", {}).get("start", {}).get("character", 0))
+    
+    references.sort(key=sort_key)
+    
+    # Apply pagination
+    total_items = len(references)
+    
+    # Apply offset and limit
+    start_idx = min(offset, total_items)
+    end_idx = min(start_idx + limit, total_items)
+    paginated_items = references[start_idx:end_idx]
+    
+    # Check if there are more items
+    has_more = end_idx < total_items
+    
+    # Add absolute offset to each item
+    processed_items = []
+    for i, item in enumerate(paginated_items):
+        processed_item = {**item, "offset": start_idx + i}
+        processed_items.append(processed_item)
+    
+    return {
+        "items": processed_items,
+        "totalItems": total_items,
+        "offset": offset,
+        "limit": limit,
+        "hasMore": has_more,
+        "nextOffset": end_idx if has_more else None
+    }
 
 
 @mcp.tool
-async def document_symbols(file_path: str, ctx: Context) -> List[Dict[str, Any]]:
+async def document_symbols(
+    file_path: str, 
+    ctx: Context,
+    limit: int = 50,
+    offset: int = 0
+) -> Dict[str, Any]:
     """Get all symbols in a document (functions, classes, methods, etc.).
     
     Args:
         file_path: Path to the Python file
+        limit: Maximum items to return (default: 50)
+        offset: Number of items to skip for pagination (default: 0)
         
     Returns:
-        Hierarchical list of symbols in the document
+        Dictionary with:
+        - items: List of symbols with absolute offsets
+        - totalItems: Total number of symbols found
+        - offset: Current offset
+        - limit: Current limit
+        - hasMore: Whether there are more items
+        - nextOffset: Offset for next page (if hasMore is True)
     """
     client = ensure_pyright()
     file_uri = ensure_file_uri(file_path)
@@ -967,53 +1075,226 @@ async def document_symbols(file_path: str, ctx: Context) -> List[Dict[str, Any]]
     # Ensure file is open
     await ensure_file_open(client, file_path, file_uri)
     
-    return await client.request("textDocument/documentSymbol", {
+    # Get all symbols
+    symbols = await client.request("textDocument/documentSymbol", {
         "textDocument": {"uri": file_uri}
     })
+    
+    # Handle empty response
+    if not symbols:
+        symbols = []
+    
+    # Flatten hierarchical symbols if needed
+    def flatten_symbols(symbols_list, parent_name=""):
+        flattened = []
+        for symbol in symbols_list:
+            # Add the symbol itself
+            symbol_copy = {**symbol}
+            if parent_name:
+                symbol_copy["containerName"] = parent_name
+            flattened.append(symbol_copy)
+            
+            # Recursively add children
+            if "children" in symbol and symbol["children"]:
+                child_symbols = flatten_symbols(symbol["children"], symbol.get("name", ""))
+                flattened.extend(child_symbols)
+                
+        return flattened
+    
+    # Check if symbols are hierarchical (DocumentSymbol) or flat (SymbolInformation)
+    if symbols and "children" in symbols[0]:
+        # Hierarchical - flatten for consistent pagination
+        symbols = flatten_symbols(symbols)
+    
+    # Sort symbols for stable ordering
+    def sort_key(symbol):
+        # For DocumentSymbol
+        if "range" in symbol:
+            return (symbol.get("range", {}).get("start", {}).get("line", 0),
+                    symbol.get("range", {}).get("start", {}).get("character", 0))
+        # For SymbolInformation
+        else:
+            return (symbol.get("location", {}).get("range", {}).get("start", {}).get("line", 0),
+                    symbol.get("location", {}).get("range", {}).get("start", {}).get("character", 0))
+    
+    symbols.sort(key=sort_key)
+    
+    # Apply pagination
+    total_items = len(symbols)
+    
+    # Apply offset and limit
+    start_idx = min(offset, total_items)
+    end_idx = min(start_idx + limit, total_items)
+    paginated_items = symbols[start_idx:end_idx]
+    
+    # Check if there are more items
+    has_more = end_idx < total_items
+    
+    # Add absolute offset to each item
+    processed_items = []
+    for i, item in enumerate(paginated_items):
+        processed_item = {**item, "offset": start_idx + i}
+        processed_items.append(processed_item)
+    
+    return {
+        "items": processed_items,
+        "totalItems": total_items,
+        "offset": offset,
+        "limit": limit,
+        "hasMore": has_more,
+        "nextOffset": end_idx if has_more else None
+    }
 
 
 @mcp.tool
-async def workspace_symbols(query: str, ctx: Context) -> List[Dict[str, Any]]:
+async def workspace_symbols(
+    query: str, 
+    ctx: Context,
+    limit: int = 50,
+    offset: int = 0
+) -> Dict[str, Any]:
     """Search for symbols across the entire workspace.
     
     Args:
         query: Search query (can be partial name)
+        limit: Maximum items to return (default: 50)
+        offset: Number of items to skip for pagination (default: 0)
         
     Returns:
-        List of matching symbols with their locations
+        Dictionary with:
+        - items: List of matching symbols with absolute offsets
+        - totalItems: Total number of symbols found
+        - offset: Current offset
+        - limit: Current limit
+        - hasMore: Whether there are more items
+        - nextOffset: Offset for next page (if hasMore is True)
     """
     client = ensure_pyright()
     
     if ctx:
         await ctx.info(f"Searching workspace for symbols matching '{query}'")
     
-    return await client.request("workspace/symbol", {
+    # Get all symbols
+    symbols = await client.request("workspace/symbol", {
         "query": query
     })
+    
+    # Handle empty response
+    if not symbols:
+        symbols = []
+    
+    # Sort symbols for stable ordering
+    def sort_key(symbol):
+        return (symbol.get("name", ""), symbol.get("location", {}).get("uri", ""),
+                symbol.get("location", {}).get("range", {}).get("start", {}).get("line", 0))
+    
+    symbols.sort(key=sort_key)
+    
+    # Apply pagination
+    total_items = len(symbols)
+    
+    # Apply offset and limit
+    start_idx = min(offset, total_items)
+    end_idx = min(start_idx + limit, total_items)
+    paginated_items = symbols[start_idx:end_idx]
+    
+    # Check if there are more items
+    has_more = end_idx < total_items
+    
+    # Add absolute offset to each item
+    processed_items = []
+    for i, item in enumerate(paginated_items):
+        processed_item = {**item, "offset": start_idx + i}
+        processed_items.append(processed_item)
+    
+    return {
+        "items": processed_items,
+        "totalItems": total_items,
+        "offset": offset,
+        "limit": limit,
+        "hasMore": has_more,
+        "nextOffset": end_idx if has_more else None
+    }
 
 
 # Code Intelligence
 @mcp.tool
-async def diagnostics(file_path: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+async def diagnostics(
+    file_path: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0
+) -> Dict[str, Any]:
     """Get current diagnostics (errors, warnings) for file(s).
     
     Args:
         file_path: Optional path to specific file. If None, returns all diagnostics.
+        limit: Maximum items to return (default: 50)
+        offset: Number of items to skip for pagination (default: 0)
         
     Returns:
-        Dictionary mapping file URIs to their diagnostics
+        Dictionary with:
+        - items: List of diagnostics with file URIs and absolute offsets
+        - totalItems: Total number of diagnostics found
+        - offset: Current offset
+        - limit: Current limit
+        - hasMore: Whether there are more items
+        - nextOffset: Offset for next page (if hasMore is True)
     """
+    # Collect all diagnostics
+    all_diagnostics = []
+    
     if file_path:
         file_uri = ensure_file_uri(file_path)
         # Ensure file is open
         client = ensure_pyright()
         await ensure_file_open(client, file_path, file_uri)
         
-        # Return diagnostics for specific file
-        return {file_uri: current_diagnostics.get(file_uri, [])}
+        # Get diagnostics for specific file
+        file_diags = current_diagnostics.get(file_uri, [])
+        for diag in file_diags:
+            all_diagnostics.append({**diag, "uri": file_uri})
     else:
-        # Return all diagnostics
-        return current_diagnostics.copy()
+        # Get all diagnostics from all files
+        for uri, diags in current_diagnostics.items():
+            for diag in diags:
+                all_diagnostics.append({**diag, "uri": uri})
+    
+    # Sort diagnostics for stable ordering
+    def sort_key(diag):
+        return (
+            diag.get("uri", ""),
+            diag.get("severity", 0),  # Errors first
+            diag.get("range", {}).get("start", {}).get("line", 0),
+            diag.get("range", {}).get("start", {}).get("character", 0)
+        )
+    
+    all_diagnostics.sort(key=sort_key)
+    
+    # Apply pagination
+    total_items = len(all_diagnostics)
+    
+    # Apply offset and limit
+    start_idx = min(offset, total_items)
+    end_idx = min(start_idx + limit, total_items)
+    paginated_items = all_diagnostics[start_idx:end_idx]
+    
+    # Check if there are more items
+    has_more = end_idx < total_items
+    
+    # Add absolute offset to each item
+    processed_items = []
+    for i, item in enumerate(paginated_items):
+        processed_item = {**item, "offset": start_idx + i}
+        processed_items.append(processed_item)
+    
+    return {
+        "items": processed_items,
+        "totalItems": total_items,
+        "offset": offset,
+        "limit": limit,
+        "hasMore": has_more,
+        "nextOffset": end_idx if has_more else None
+    }
 
 
 @mcp.tool
