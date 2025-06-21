@@ -53,15 +53,30 @@ Add to your Claude Desktop configuration:
 ### Core Language Features
 - `hover` - Get type information and documentation at a position
 - `completion` - Code completions with type information
+  - `limit`: Maximum items to return (default: 50)
+  - `offset`: Number of items to skip for pagination (default: 0)
+  - Returns: Items with absolute `offset` for direct retrieval
 - `definition` - Go to definition
 - `type_definition` - Go to type definition
 - `implementation` - Find implementations
 - `references` - Find all references
+  - `limit`: Maximum items to return (default: 50)
+  - `offset`: Number of items to skip for pagination (default: 0)
+  - Returns: Items with absolute `offset` for direct retrieval
 - `document_symbols` - List symbols in a document
+  - `limit`: Maximum items to return (default: 50)
+  - `offset`: Number of items to skip for pagination (default: 0)
+  - Returns: Items with absolute `offset` for direct retrieval
 - `workspace_symbols` - Search symbols across workspace
+  - `limit`: Maximum items to return (default: 50)
+  - `offset`: Number of items to skip for pagination (default: 0)
+  - Returns: Items with absolute `offset` for direct retrieval
 
 ### Code Intelligence
 - `diagnostics` - Get type checking errors and warnings
+  - `limit`: Maximum items to return (default: 50)
+  - `offset`: Number of items to skip for pagination (default: 0)
+  - Returns: Items with absolute `offset` for direct retrieval
 - `code_actions` - Get available quick fixes
 - `rename` - Rename symbols across the project
 - `semantic_tokens` - Semantic syntax highlighting
@@ -76,6 +91,32 @@ Add to your Claude Desktop configuration:
 - `add_import` - Add missing import statements
 - `create_config` - Create pyrightconfig.json
 - `restart_server` - Restart the pyright server
+
+### Pagination Support
+
+Tools that return lists now support pagination to handle large result sets efficiently:
+
+#### Example Usage
+
+```python
+# Get first page of references
+result = await references(file_path="example.py", line=10, character=5, limit=20, offset=0)
+# Returns: {"items": [...], "totalItems": 150, "hasMore": true, "nextOffset": 20}
+
+# Get next page
+result = await references(file_path="example.py", line=10, character=5, limit=20, offset=20)
+
+# Get specific item by its offset
+result = await references(file_path="example.py", line=10, character=5, limit=1, offset=42)
+```
+
+Each paginated response includes:
+- `items`: Array of results with absolute `offset` for each item
+- `totalItems`: Total number of items available
+- `offset`: Current offset used
+- `limit`: Current limit used
+- `hasMore`: Boolean indicating if more items are available
+- `nextOffset`: Offset to use for the next page (if `hasMore` is true)
 
 ## Configuration
 
