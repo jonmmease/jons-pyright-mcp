@@ -337,6 +337,34 @@ wheels = [
 ]
 
 [[package]]
+name = "jons-pyright-mcp"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastmcp" },
+    { name = "pyright" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-timeout" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastmcp", specifier = ">=0.3.0" },
+    { name = "pyright", specifier = ">=1.1.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.1.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "markdown-it-py"
 version = "3.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -562,34 +590,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/aa/04/ce0c132d00e20f2d2
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/37/1a1c62d955e82adae588be8e374c7f77b165b6cb4203f7d581269959abbc/pyright-1.1.402-py3-none-any.whl", hash = "sha256:2c721f11869baac1884e846232800fe021c33f1b4acb3929cff321f7ea4e2982", size = 5624004 },
 ]
-
-[[package]]
-name = "pyright-mcp"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fastmcp" },
-    { name = "pyright" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-timeout" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastmcp", specifier = ">=0.3.0" },
-    { name = "pyright", specifier = ">=1.1.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
-    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.1.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "pytest"

@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-import pyright_mcp
-from pyright_mcp import ensure_file_uri, ensure_pyright
+import jons_mcp_pyright
+from jons_mcp_pyright import ensure_file_uri, ensure_pyright
 
 
 def create_mock_client():
@@ -42,7 +42,7 @@ class TestUtilityFunctions:
     
     def test_ensure_pyright_not_initialized(self):
         """Test ensure_pyright when client is not initialized."""
-        pyright_mcp.pyright = None
+        jons_mcp_pyright.pyright = None
         with pytest.raises(RuntimeError, match="pyright is not initialized"):
             ensure_pyright()
     
@@ -50,8 +50,8 @@ class TestUtilityFunctions:
         """Test ensure_pyright with initialized client."""
         mock_client = MagicMock()
         mock_client._initialized = True
-        pyright_mcp.pyright = mock_client
-        pyright_mcp.initialization_complete = True
+        jons_mcp_pyright.pyright = mock_client
+        jons_mcp_pyright.initialization_complete = True
         
         result = ensure_pyright()
         assert result == mock_client
@@ -73,11 +73,11 @@ class TestCoreLanguageFeatures:
         })
         mock_client.notify = AsyncMock()  # Mock notify for file open
         
-        pyright_mcp.pyright = mock_client
-        pyright_mcp.initialization_complete = True
+        jons_mcp_pyright.pyright = mock_client
+        jons_mcp_pyright.initialization_complete = True
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.hover.fn(
+        result = await jons_mcp_pyright.hover.fn(
             file_path="test.py",
             line=10,
             character=5,
@@ -97,11 +97,11 @@ class TestCoreLanguageFeatures:
         mock_client.request = AsyncMock(return_value=None)
         mock_client.notify = AsyncMock()
         
-        pyright_mcp.pyright = mock_client
-        pyright_mcp.initialization_complete = True
+        jons_mcp_pyright.pyright = mock_client
+        jons_mcp_pyright.initialization_complete = True
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.hover.fn(
+        result = await jons_mcp_pyright.hover.fn(
             file_path="test.py",
             line=10,
             character=5,
@@ -116,11 +116,11 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client._initialized = False  # Mark as not initialized
         
-        pyright_mcp.pyright = mock_client
-        pyright_mcp.initialization_complete = False
+        jons_mcp_pyright.pyright = mock_client
+        jons_mcp_pyright.initialization_complete = False
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.hover.fn(
+        result = await jons_mcp_pyright.hover.fn(
             file_path="test.py",
             line=10,
             character=5,
@@ -140,17 +140,28 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value={"items": mock_items})
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.completion.fn(
+        result = await jons_mcp_pyright.completion.fn(
             file_path="test.py",
             line=10,
             character=5,
             ctx=mock_ctx
         )
         
-        assert result == mock_items
+        # Result should be paginated response
+        assert "items" in result
+        assert "totalItems" in result
+        assert "offset" in result
+        assert "limit" in result
+        assert "hasMore" in result
+        
+        # Check that the items have the expected labels (ignoring added offset fields)
+        assert len(result["items"]) == len(mock_items)
+        labels = [item["label"] for item in result["items"]]
+        expected_labels = [item["label"] for item in mock_items]
+        assert set(labels) == set(expected_labels)
     
     @pytest.mark.asyncio
     async def test_completion_list_response(self):
@@ -163,17 +174,28 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_items)
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.completion.fn(
+        result = await jons_mcp_pyright.completion.fn(
             file_path="test.py",
             line=10,
             character=5,
             ctx=mock_ctx
         )
         
-        assert result == mock_items
+        # Result should be paginated response
+        assert "items" in result
+        assert "totalItems" in result
+        assert "offset" in result
+        assert "limit" in result
+        assert "hasMore" in result
+        
+        # Check that the items have the expected labels (ignoring added offset fields)
+        assert len(result["items"]) == len(mock_items)
+        labels = [item["label"] for item in result["items"]]
+        expected_labels = [item["label"] for item in mock_items]
+        assert set(labels) == set(expected_labels)
     
     @pytest.mark.asyncio
     async def test_definition(self):
@@ -189,10 +211,10 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_location)
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.definition.fn(
+        result = await jons_mcp_pyright.definition.fn(
             file_path="test.py",
             line=10,
             character=5,
@@ -216,16 +238,27 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_refs)
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
-        result = await pyright_mcp.references.fn(
+        result = await jons_mcp_pyright.references.fn(
             file_path="test.py",
             line=10,
             character=5,
             include_declaration=False
         )
         
-        assert result == mock_refs
+        # Result should be paginated response
+        assert "items" in result
+        assert "totalItems" in result
+        assert "offset" in result
+        assert "limit" in result
+        assert "hasMore" in result
+        
+        # Check that the items have the expected URIs (ignoring added offset fields)
+        assert len(result["items"]) == len(mock_refs)
+        uris = [item["uri"] for item in result["items"]]
+        expected_uris = [item["uri"] for item in mock_refs]
+        assert set(uris) == set(expected_uris)
         mock_client.request.assert_called_once_with("textDocument/references", {
             "textDocument": {"uri": f"file://{test_file.absolute()}"},
             "position": {"line": 10, "character": 5},
@@ -249,15 +282,29 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_symbols)
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.document_symbols.fn(
+        result = await jons_mcp_pyright.document_symbols.fn(
             file_path="test.py",
             ctx=mock_ctx
         )
         
-        assert result == mock_symbols
+        # Result should be paginated response
+        assert "items" in result
+        assert "totalItems" in result
+        assert "offset" in result
+        assert "limit" in result
+        assert "hasMore" in result
+        
+        # Check that the items have the expected symbols
+        # Note: The function flattens hierarchical symbols, so we should have 3 items:
+        # Calculator, __init__, and add
+        assert len(result["items"]) == 3
+        names = [item["name"] for item in result["items"]]
+        assert "Calculator" in names
+        assert "__init__" in names
+        assert "add" in names
     
     @pytest.mark.asyncio
     async def test_workspace_symbols(self):
@@ -270,15 +317,26 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_symbols)
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.workspace_symbols.fn(
+        result = await jons_mcp_pyright.workspace_symbols.fn(
             query="calc",
             ctx=mock_ctx
         )
         
-        assert result == mock_symbols
+        # Result should be paginated response
+        assert "items" in result
+        assert "totalItems" in result
+        assert "offset" in result
+        assert "limit" in result
+        assert "hasMore" in result
+        
+        # Check that the items have the expected symbols (ignoring added offset fields)
+        assert len(result["items"]) == len(mock_symbols)
+        names = [item["name"] for item in result["items"]]
+        expected_names = [item["name"] for item in mock_symbols]
+        assert set(names) == set(expected_names)
 
 
 class TestCodeIntelligence:
@@ -296,26 +354,41 @@ class TestCodeIntelligence:
             ]
         }
         
-        pyright_mcp.current_diagnostics = mock_diagnostics
+        jons_mcp_pyright.current_diagnostics = mock_diagnostics
         
-        result = await pyright_mcp.diagnostics.fn()
-        assert result == mock_diagnostics
+        result = await jons_mcp_pyright.diagnostics.fn()
+        
+        # Result should be paginated response for the flattened list
+        assert "items" in result
+        assert "totalItems" in result
+        assert "offset" in result
+        assert "limit" in result
+        assert "hasMore" in result
+        # Check that items contain diagnostics from both files
+        assert len(result["items"]) == 2
     
     @pytest.mark.asyncio
     async def test_diagnostics_single_file(self):
         """Test diagnostics tool for single file."""
         mock_client = create_mock_client()
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
-        pyright_mcp.current_diagnostics = {
+        jons_mcp_pyright.current_diagnostics = {
             "file:///test1.py": [{"severity": 1, "message": "Error 1"}],
             "file:///test2.py": [{"severity": 2, "message": "Warning 1"}]
         }
         
-        result = await pyright_mcp.diagnostics.fn(file_path="/test1.py")
-        assert result == {
-            "file:///test1.py": [{"severity": 1, "message": "Error 1"}]
-        }
+        result = await jons_mcp_pyright.diagnostics.fn(file_path="/test1.py")
+        
+        # Result should be paginated response for single file diagnostics
+        assert "items" in result
+        assert "totalItems" in result
+        assert "offset" in result
+        assert "limit" in result
+        assert "hasMore" in result
+        # Should contain only diagnostics from test1.py
+        assert len(result["items"]) == 1
+        assert result["items"][0]["message"] == "Error 1"
     
     @pytest.mark.asyncio
     async def test_code_actions(self):
@@ -328,11 +401,11 @@ class TestCodeIntelligence:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_actions)
         
-        pyright_mcp.pyright = mock_client
-        pyright_mcp.current_diagnostics = {}
+        jons_mcp_pyright.pyright = mock_client
+        jons_mcp_pyright.current_diagnostics = {}
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.code_actions.fn(
+        result = await jons_mcp_pyright.code_actions.fn(
             file_path="test.py",
             start_line=10,
             start_char=0,
@@ -361,10 +434,10 @@ class TestCodeIntelligence:
             mock_edit  # rename
         ]
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.rename.fn(
+        result = await jons_mcp_pyright.rename.fn(
             file_path="test.py",
             line=10,
             character=5,
@@ -380,10 +453,10 @@ class TestCodeIntelligence:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=None)
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.rename.fn(
+        result = await jons_mcp_pyright.rename.fn(
             file_path="test.py",
             line=10,
             character=5,
@@ -411,10 +484,10 @@ class TestCodeIntelligence:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_signatures)
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.signature_help.fn(
+        result = await jons_mcp_pyright.signature_help.fn(
             file_path="test.py",
             line=10,
             character=5,
@@ -441,9 +514,9 @@ class TestFormattingTools:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_edits)
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
-        result = await pyright_mcp.format_document.fn(
+        result = await jons_mcp_pyright.format_document.fn(
             file_path="test.py",
             tab_size=2,
             insert_spaces=False
@@ -467,10 +540,10 @@ class TestFormattingTools:
             "changes": {"file:///test.py": mock_edits}
         })
         
-        pyright_mcp.pyright = mock_client
+        jons_mcp_pyright.pyright = mock_client
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.organize_imports.fn(
+        result = await jons_mcp_pyright.organize_imports.fn(
             file_path="/test.py",
             ctx=mock_ctx
         )
@@ -501,11 +574,11 @@ class TestPyrightExtensions:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_actions)
         
-        pyright_mcp.pyright = mock_client
-        pyright_mcp.current_diagnostics = {}
+        jons_mcp_pyright.pyright = mock_client
+        jons_mcp_pyright.current_diagnostics = {}
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.add_import.fn(
+        result = await jons_mcp_pyright.add_import.fn(
             file_path="test.py",
             line=10,
             character=5,
@@ -520,11 +593,11 @@ class TestPyrightExtensions:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=[])
         
-        pyright_mcp.pyright = mock_client
-        pyright_mcp.current_diagnostics = {}
+        jons_mcp_pyright.pyright = mock_client
+        jons_mcp_pyright.current_diagnostics = {}
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.add_import.fn(
+        result = await jons_mcp_pyright.add_import.fn(
             file_path="test.py",
             line=10,
             character=5,
@@ -539,7 +612,7 @@ class TestPyrightExtensions:
         monkeypatch.chdir(tmp_path)
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.create_config.fn(ctx=mock_ctx)
+        result = await jons_mcp_pyright.create_config.fn(ctx=mock_ctx)
         
         assert result == "Created pyrightconfig.json"
         
@@ -562,7 +635,7 @@ class TestPyrightExtensions:
         config_file.write_text("{}")
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.create_config.fn(ctx=mock_ctx)
+        result = await jons_mcp_pyright.create_config.fn(ctx=mock_ctx)
         
         assert result == "pyrightconfig.json already exists"
     
@@ -572,7 +645,7 @@ class TestPyrightExtensions:
         # Mock existing client
         old_client = AsyncMock()
         old_client.shutdown = AsyncMock()
-        pyright_mcp.pyright = old_client
+        jons_mcp_pyright.pyright = old_client
         
         # Mock new client creation
         new_client = AsyncMock()
@@ -580,20 +653,20 @@ class TestPyrightExtensions:
         
         mock_ctx = AsyncMock()
         
-        with patch("pyright_mcp.PyrightClient", return_value=new_client):
-            result = await pyright_mcp.restart_server.fn(ctx=mock_ctx)
+        with patch("jons_mcp_pyright.PyrightClient", return_value=new_client):
+            result = await jons_mcp_pyright.restart_server.fn(ctx=mock_ctx)
         
         assert result == "pyright server restarted successfully"
         old_client.shutdown.assert_called_once()
         new_client.start.assert_called_once()
-        assert pyright_mcp.pyright == new_client
+        assert jons_mcp_pyright.pyright == new_client
     
     @pytest.mark.asyncio
     async def test_restart_server_not_running(self):
         """Test restart_server tool when server not running."""
-        pyright_mcp.pyright = None
+        jons_mcp_pyright.pyright = None
         
         mock_ctx = AsyncMock()
-        result = await pyright_mcp.restart_server.fn(ctx=mock_ctx)
+        result = await jons_mcp_pyright.restart_server.fn(ctx=mock_ctx)
         
         assert result == "pyright server is not running"

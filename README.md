@@ -1,15 +1,15 @@
-# pyright-mcp
+# jons-pyright-mcp
 
 A FastMCP server that exposes [pyright](https://github.com/microsoft/pyright) LSP features through the Model Context Protocol.
 
 ## Installation
 
 ```bash
-# Install with pip
-pip install fastmcp pyright
+# Install the package
+uv add jons-pyright-mcp
 
-# Or use uv to run directly
-uv run pyright_mcp.py
+# Or install from source
+uv sync
 ```
 
 ## Usage
@@ -17,12 +17,11 @@ uv run pyright_mcp.py
 ### Running the server
 
 ```bash
-# Run with Python
-python pyright_mcp.py
+# Run the installed script
+uv run jons-pyright-mcp
 
-# Or make executable
-chmod +x pyright_mcp.py
-./pyright_mcp.py
+# Or run from source
+uv run src/jons_mcp_pyright.py
 ```
 
 ### Claude Code Integration
@@ -30,7 +29,7 @@ chmod +x pyright_mcp.py
 Add as a project-scoped MCP server:
 
 ```bash
-claude mcp add --scope project pyright uv run /path/to/pyright_mcp.py
+claude mcp add --scope project jons-pyright-mcp uv run jons-pyright-mcp
 ```
 
 ### Claude Desktop Integration
@@ -40,9 +39,9 @@ Add to your Claude Desktop configuration:
 ```json
 {
   "mcpServers": {
-    "pyright": {
+    "jons-pyright-mcp": {
       "command": "uv",
-      "args": ["run", "/path/to/pyright_mcp.py"]
+      "args": ["run", "jons-pyright-mcp"]
     }
   }
 }
@@ -129,29 +128,51 @@ You can also set the `PYRIGHT_PATH` environment variable to use a specific pyrig
 
 ## Development
 
+### Setup
+
+```bash
+# Clone the repository and sync dependencies
+uv sync --extra dev
+```
+
 ### Running tests
 
 ```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest
+# Run all tests
+uv run pytest
 
 # Run specific test files
-pytest tests/test_lsp_client.py
-pytest tests/test_mcp_tools.py
+uv run pytest tests/test_lsp_client.py
+uv run pytest tests/test_mcp_tools.py
+
+# Run tests with coverage
+uv run pytest --cov=src
+```
+
+### Development workflow
+
+```bash
+# Run the server during development
+uv run src/jons_mcp_pyright.py
+
+# Run linting/type checking (if configured)
+uv run pyright src/
+
+# Install in development mode
+uv sync
 ```
 
 ### Project Structure
 
-- `pyright_mcp.py` - Main server implementation
+- `src/jons_mcp_pyright.py` - Main server implementation
 - `requirements.md` - Detailed requirements document
 - `tests/` - Test suite
   - `conftest.py` - Test fixtures
   - `test_lsp_client.py` - LSP client tests
   - `test_mcp_tools.py` - MCP tool tests
   - `test_integration.py` - Integration tests
+- `pyproject.toml` - Project configuration and dependencies
+- `uv.lock` - Dependency lock file
 
 ## License
 

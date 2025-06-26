@@ -4,12 +4,14 @@ Unit tests for the PyrightClient class.
 
 import asyncio
 import json
+import subprocess
+import unittest.mock
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import sys
 
-from pyright_mcp import PyrightClient, LSPRequestError, Position, Range
+from jons_mcp_pyright import PyrightClient, LSPRequestError, Position, Range
 
 
 class TestPyrightClient:
@@ -80,19 +82,22 @@ class TestPyrightClient:
         mock_process.stdout = AsyncMock()
         mock_process.stderr = AsyncMock()
         
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+        with patch("subprocess.Popen", return_value=mock_process) as mock_popen:
             # Mock the initialization
             with patch.object(client, "_initialize", new_callable=AsyncMock):
-                with patch.object(client, "_read_loop", new_callable=AsyncMock):
-                    with patch.object(client, "_stderr_reader", new_callable=AsyncMock):
-                        await client.start()
+                with patch("threading.Thread") as mock_thread:
+                    mock_thread_instance = MagicMock()
+                    mock_thread.return_value = mock_thread_instance
+                    await client.start()
         
-        mock_exec.assert_called_once_with(
-            "echo", "test",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(tmp_path)
+        mock_popen.assert_called_once_with(
+            ["echo", "test"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(tmp_path),
+            env=unittest.mock.ANY,
+            bufsize=0
         )
         assert client.process == mock_process
     
@@ -111,74 +116,21 @@ class TestPyrightClient:
         
         # Check that proper LSP format was written
         calls = mock_stdin.write.call_args_list
-        assert len(calls) == 2  # header + content
+        assert len(calls) == 1  # header + content combined
         
-        # Check header
-        header = calls[0][0][0].decode('utf-8')
-        assert header.startswith("Content-Length: ")
-        assert header.endswith("\r\n\r\n")
+        # Check the complete message
+        written_data = calls[0][0][0]
+        written_str = written_data.decode('utf-8')
         
-        # Check content
-        content = calls[1][0][0].decode('utf-8')
+        # Should have header and content
+        assert "Content-Length: " in written_str
+        assert "\r\n\r\n" in written_str
+        
+        # Extract content part
+        header_end = written_str.find("\r\n\r\n") + 4
+        content = written_str[header_end:]
         assert json.loads(content) == message
     
-    def test_parse_message_complete(self, tmp_path: Path):
-        """Test parsing a complete LSP message."""
-        client = PyrightClient(tmp_path)
-        
-        message = {"jsonrpc": "2.0", "id": 1, "result": {"test": "value"}}
-        content = json.dumps(message)
-        content_bytes = content.encode('utf-8')
-        
-        buffer = f"Content-Length: {len(content_bytes)}\r\n\r\n".encode('utf-8') + content_bytes
-        
-        parsed, remaining = client._parse_message(buffer)
-        assert parsed == message
-        assert remaining == b""
-    
-    def test_parse_message_incomplete_header(self, tmp_path: Path):
-        """Test parsing with incomplete header."""
-        client = PyrightClient(tmp_path)
-        
-        buffer = b"Content-Length: 42\r\n"  # Missing \r\n
-        
-        parsed, remaining = client._parse_message(buffer)
-        assert parsed is None
-        assert remaining == buffer
-    
-    def test_parse_message_incomplete_content(self, tmp_path: Path):
-        """Test parsing with incomplete content."""
-        client = PyrightClient(tmp_path)
-        
-        buffer = b"Content-Length: 100\r\n\r\n{\"test\": "  # Content too short
-        
-        parsed, remaining = client._parse_message(buffer)
-        assert parsed is None
-        assert remaining == buffer
-    
-    def test_parse_message_multiple(self, tmp_path: Path):
-        """Test parsing multiple messages in buffer."""
-        client = PyrightClient(tmp_path)
-        
-        message1 = {"jsonrpc": "2.0", "id": 1, "result": {}}
-        content1 = json.dumps(message1).encode('utf-8')
-        
-        message2 = {"jsonrpc": "2.0", "method": "test"}
-        content2 = json.dumps(message2).encode('utf-8')
-        
-        buffer = (
-            f"Content-Length: {len(content1)}\r\n\r\n".encode('utf-8') + content1 +
-            f"Content-Length: {len(content2)}\r\n\r\n".encode('utf-8') + content2
-        )
-        
-        # Parse first message
-        parsed1, remaining1 = client._parse_message(buffer)
-        assert parsed1 == message1
-        
-        # Parse second message
-        parsed2, remaining2 = client._parse_message(remaining1)
-        assert parsed2 == message2
-        assert remaining2 == b""
     
     @pytest.mark.asyncio
     async def test_handle_response(self, tmp_path: Path):
@@ -250,7 +202,7 @@ class TestPyrightClient:
         client.process.stdin = AsyncMock()
         
         # Make a request that will timeout
-        with patch("pyright_mcp.asyncio.wait_for") as mock_wait_for:
+        with patch("jons_mcp_pyright.asyncio.wait_for") as mock_wait_for:
             mock_wait_for.side_effect = asyncio.TimeoutError()
             with pytest.raises(LSPRequestError, match="timed out"):
                 await client.request("test")
@@ -264,16 +216,10 @@ class TestPyrightClient:
         client = PyrightClient(tmp_path)
         
         # Mock process and methods
-        mock_process = AsyncMock()
-        mock_process.wait = AsyncMock()
+        mock_process = MagicMock()
+        mock_process.wait = MagicMock()
+        mock_process.poll = MagicMock(return_value=0)  # Process already terminated
         client.process = mock_process
-        
-        # Mock reader task as an actual asyncio task
-        async def dummy_reader():
-            await asyncio.sleep(100)  # Never completes
-        
-        reader_task = asyncio.create_task(dummy_reader())
-        client._reader_task = reader_task
         
         # Mock request and notify methods
         with patch.object(client, "request", new_callable=AsyncMock) as mock_request:
@@ -281,10 +227,10 @@ class TestPyrightClient:
                 await client.shutdown()
         
         # Verify shutdown sequence
-        mock_request.assert_called_once_with("shutdown")
-        mock_notify.assert_called_once_with("exit")
-        mock_process.wait.assert_called_once()
-        assert reader_task.cancelled()  # Task should be cancelled
+        mock_request.assert_called_once_with("shutdown", {})
+        mock_notify.assert_called_once_with("exit", {})
+        # wait should not be called because poll() returns 0 (terminated)
+        mock_process.wait.assert_not_called()
         assert client.process is None
         assert client._initialized is False
     
@@ -296,16 +242,17 @@ class TestPyrightClient:
         # Mock process
         mock_process = MagicMock()
         mock_process.terminate = MagicMock()
-        mock_process.wait = AsyncMock()
+        mock_process.wait = MagicMock()  # Synchronous wait for timeout
+        mock_process.poll = MagicMock(return_value=None)  # Process still running
         client.process = mock_process
         
         # Mock request to raise error
         with patch.object(client, "request", side_effect=Exception("Shutdown failed")):
             await client.shutdown()
         
-        # Verify process was terminated
+        # Verify process was terminated (because poll() returns None)
         mock_process.terminate.assert_called_once()
-        mock_process.wait.assert_called_once()
+        mock_process.wait.assert_called_once_with(timeout=5)
 
 
 class TestPositionAndRange:

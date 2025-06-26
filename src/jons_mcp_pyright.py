@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [
-#   "fastmcp>=0.3.0",
-#   "pyright>=1.1.0",
-# ]
-# ///
 
 """
 FastMCP server that exposes pyright LSP features through MCP tools.
@@ -1651,8 +1644,8 @@ async def restart_server(ctx: Context) -> str:
     return "pyright server restarted successfully"
 
 
-# Main entry point
-if __name__ == "__main__":
+def main():
+    """Main entry point for the pyright MCP server."""
     # Handle keyboard interrupt gracefully
     def signal_handler(sig, frame):
         logger.info("Received interrupt signal, shutting down...")
@@ -1662,3 +1655,8 @@ if __name__ == "__main__":
     
     # Run the server
     mcp.run()
+
+
+# Main entry point
+if __name__ == "__main__":
+    main()
