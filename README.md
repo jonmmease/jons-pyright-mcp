@@ -5,10 +5,15 @@ A FastMCP server that exposes [pyright](https://github.com/microsoft/pyright) LS
 ## Installation
 
 ```bash
-# Install the package
+# Install from GitHub
+uvx --from git+https://github.com/jonmmease/jons-pyright-mcp jons-pyright-mcp
+
+# Or install the package (when published)
 uv add jons-pyright-mcp
 
 # Or install from source
+git clone https://github.com/jonmmease/jons-pyright-mcp.git
+cd jons-pyright-mcp
 uv sync
 ```
 
@@ -17,7 +22,10 @@ uv sync
 ### Running the server
 
 ```bash
-# Run the installed script
+# Run the installed script (via uvx)
+jons-pyright-mcp
+
+# Run via uv if installed with uv add
 uv run jons-pyright-mcp
 
 # Or run from source
@@ -29,12 +37,31 @@ uv run src/jons_mcp_pyright.py
 Add as a project-scoped MCP server:
 
 ```bash
+# Install directly from GitHub
+claude mcp add jons-pyright-mcp uvx -- --from git+https://github.com/jonmmease/jons-pyright-mcp jons-pyright-mcp
+
+# If already installed via uvx
+claude mcp add --scope project jons-pyright-mcp jons-pyright-mcp
+
+# If installed via uv add
 claude mcp add --scope project jons-pyright-mcp uv run jons-pyright-mcp
 ```
 
 ### Claude Desktop Integration
 
 Add to your Claude Desktop configuration:
+
+```json
+{
+  "mcpServers": {
+    "jons-pyright-mcp": {
+      "command": "jons-pyright-mcp"
+    }
+  }
+}
+```
+
+Or if installed via `uv add`:
 
 ```json
 {
