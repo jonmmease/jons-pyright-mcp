@@ -49,10 +49,10 @@ exclude_lines = [
 ]
 
 [project.scripts]
-jons-pyright-mcp = "jons_mcp_pyright:main"
+jons-pyright-mcp = "src.jons_mcp_pyright:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+packages = ["src"]
 
 [tool.pyright]
 include = ["src", "tests"]
