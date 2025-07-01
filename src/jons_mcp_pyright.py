@@ -1634,9 +1634,12 @@ async def restart_server(ctx: Context) -> str:
     # Shutdown existing server
     await pyright.shutdown()
     
-    # Start new server
+    # Re-read configuration before starting new server
     project_root = pyright.project_root
-    pyright = PyrightClient(project_root)
+    pyright_config = read_pyright_config(project_root)
+    
+    # Start new server with updated config
+    pyright = PyrightClient(project_root, pyright_config)
     pyright.on_notification("textDocument/publishDiagnostics", handle_diagnostics)
     
     await pyright.start()
