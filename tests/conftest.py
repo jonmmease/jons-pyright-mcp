@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import AsyncGenerator, Dict, Any
 import pytest
 
-# Add parent directory to path to import jons_mcp_pyright
+# Add src directory to path to import jons_mcp_pyright
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from jons_mcp_pyright import PyrightClient
 
@@ -371,19 +371,19 @@ def event_loop():
 @pytest.fixture(autouse=True)
 def mock_initialization_state():
     """Mock the initialization state for tests."""
-    import jons_mcp_pyright
+    from jons_mcp_pyright import server as server_module
     # Save original state
-    original_complete = getattr(jons_mcp_pyright, 'initialization_complete', False)
-    original_pyright = jons_mcp_pyright.pyright
-    original_opened_files = getattr(jons_mcp_pyright, 'opened_files', set())
-    
+    original_complete = server_module.initialization_complete
+    original_pyright = server_module.pyright
+    original_opened_files = server_module.opened_files
+
     # Set test state
-    jons_mcp_pyright.initialization_complete = True
-    jons_mcp_pyright.opened_files = set()
-    
+    server_module.initialization_complete = True
+    server_module.opened_files = set()
+
     yield
-    
+
     # Restore original state
-    jons_mcp_pyright.initialization_complete = original_complete
-    jons_mcp_pyright.pyright = original_pyright
-    jons_mcp_pyright.opened_files = original_opened_files
+    server_module.initialization_complete = original_complete
+    server_module.pyright = original_pyright
+    server_module.opened_files = original_opened_files

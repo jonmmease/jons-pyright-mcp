@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import sys
 
-from jons_mcp_pyright import PyrightClient, LSPRequestError, Position, Range
+from jons_mcp_pyright import PyrightClient, LSPRequestError, Position, Range, PyrightNotFoundError
 
 
 class TestPyrightClient:
@@ -64,11 +64,11 @@ class TestPyrightClient:
     def test_find_pyright_not_found(self, tmp_path: Path, monkeypatch):
         """Test error when pyright is not found."""
         monkeypatch.delenv("PYRIGHT_PATH", raising=False)
-        
+
         with patch.dict('sys.modules', {'pyright': None}):
             with patch("shutil.which") as mock_which:
                 mock_which.return_value = None
-                with pytest.raises(RuntimeError, match="pyright not found"):
+                with pytest.raises(PyrightNotFoundError, match="pyright not found"):
                     PyrightClient(tmp_path)
     
     @pytest.mark.asyncio
@@ -202,7 +202,7 @@ class TestPyrightClient:
         client.process.stdin = AsyncMock()
         
         # Make a request that will timeout
-        with patch("jons_mcp_pyright.asyncio.wait_for") as mock_wait_for:
+        with patch("jons_mcp_pyright.lsp_client.asyncio.wait_for") as mock_wait_for:
             mock_wait_for.side_effect = asyncio.TimeoutError()
             with pytest.raises(LSPRequestError, match="timed out"):
                 await client.request("test")

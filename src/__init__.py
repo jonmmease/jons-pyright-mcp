@@ -1,5 +1,9 @@
-"""
-jons-pyright-mcp: FastMCP server exposing pyright LSP features.
+"""FastMCP server exposing Pyright LSP features.
+
+This module provides backward compatibility by re-exporting
+from the new package structure.
 """
 
-__version__ = "0.1.0"
+from .jons_mcp_pyright import main
+
+__all__ = ["main"]
