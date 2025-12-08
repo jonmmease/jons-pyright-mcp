@@ -1,4 +1,4 @@
-# jons-pyright-mcp
+# jons-mcp-pywright
 
 A FastMCP server that exposes [pyright](https://github.com/microsoft/pyright) LSP features through the Model Context Protocol.
 
@@ -6,14 +6,14 @@ A FastMCP server that exposes [pyright](https://github.com/microsoft/pyright) LS
 
 ```bash
 # Install from GitHub
-uvx --from git+https://github.com/jonmmease/jons-pyright-mcp jons-pyright-mcp
+uvx --from git+https://github.com/jonmmease/jons-mcp-pywright jons-mcp-pywright
 
 # Or install the package (when published)
-uv add jons-pyright-mcp
+uv add jons-mcp-pywright
 
 # Or install from source
-git clone https://github.com/jonmmease/jons-pyright-mcp.git
-cd jons-pyright-mcp
+git clone https://github.com/jonmmease/jons-mcp-pywright.git
+cd jons-mcp-pywright
 uv sync
 ```
 
@@ -23,10 +23,10 @@ uv sync
 
 ```bash
 # Run the installed script (via uvx)
-jons-pyright-mcp
+jons-mcp-pywright
 
 # Run via uv if installed with uv add
-uv run jons-pyright-mcp
+uv run jons-mcp-pywright
 
 # Or run from source
 uv run src/jons_mcp_pyright.py
@@ -38,13 +38,48 @@ Add as a project-scoped MCP server:
 
 ```bash
 # Install directly from GitHub
-claude mcp add jons-pyright-mcp uvx -- --from git+https://github.com/jonmmease/jons-pyright-mcp jons-pyright-mcp
+claude mcp add jons-mcp-pywright uvx -- --from git+https://github.com/jonmmease/jons-mcp-pywright jons-mcp-pywright
 
 # If already installed via uvx
-claude mcp add --scope project jons-pyright-mcp jons-pyright-mcp
+claude mcp add --scope project jons-mcp-pywright jons-mcp-pywright
 
 # If installed via uv add
-claude mcp add --scope project jons-pyright-mcp uv run jons-pyright-mcp
+claude mcp add --scope project jons-mcp-pywright uv run jons-mcp-pywright
+```
+
+#### Running from a Local Directory
+
+If you have the repository cloned locally and want to run the server from source:
+
+```bash
+# Clone if not already done
+git clone https://github.com/jonmmease/jons-mcp-pywright.git
+cd jons-mcp-pywright
+uv sync
+
+# Add to Claude Code (user scope - available in all projects)
+claude mcp add --scope user jons-mcp-pyright \
+  uv run --project /path/to/jons-mcp-pyright jons-mcp-pyright
+
+# Or add to a specific project only
+claude mcp add --scope project jons-mcp-pyright \
+  uv run --project /path/to/jons-mcp-pyright jons-mcp-pyright
+```
+
+Replace `/path/to/jons-mcp-pyright` with the actual path to your local clone.
+
+**Important:** Use `--project` (not `--directory`) so the server runs with the current working directory of your target project. This allows pyright to analyze the correct codebase and use its dependencies.
+
+To verify the server is configured:
+
+```bash
+claude mcp list
+```
+
+To remove later:
+
+```bash
+claude mcp remove jons-mcp-pyright
 ```
 
 ### Claude Desktop Integration
@@ -54,8 +89,8 @@ Add to your Claude Desktop configuration:
 ```json
 {
   "mcpServers": {
-    "jons-pyright-mcp": {
-      "command": "jons-pyright-mcp"
+    "jons-mcp-pywright": {
+      "command": "jons-mcp-pywright"
     }
   }
 }
@@ -66,9 +101,9 @@ Or if installed via `uv add`:
 ```json
 {
   "mcpServers": {
-    "jons-pyright-mcp": {
+    "jons-mcp-pywright": {
       "command": "uv",
-      "args": ["run", "jons-pyright-mcp"]
+      "args": ["run", "jons-mcp-pywright"]
     }
   }
 }

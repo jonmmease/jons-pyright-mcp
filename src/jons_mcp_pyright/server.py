@@ -17,12 +17,14 @@ from typing import Any, AsyncIterator
 from fastmcp import FastMCP
 
 from .exceptions import PyrightNotInitializedError
-from .lsp_client import PyrightClient, read_pyright_config
+from .lsp_client import PyrightClient
+from .manager import PyrightClientManager
 from .tools import (
     definition,
     diagnostics,
     document_symbols,
     implementation,
+    list_environments,
     references,
     rename,
     restart_server,
@@ -40,14 +42,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
-# Global pyright client instance
-pyright: PyrightClient | None = None
-
-# Store diagnostics from pyright
-current_diagnostics: dict[str, list[dict[str, Any]]] = {}
-
-# Track opened files
-opened_files: set[str] = set()
+# Global manager instance (replaces single pyright client)
+manager: PyrightClientManager | None = None
 
 # Track initialization state
 initialization_complete = False
@@ -56,18 +52,22 @@ initialization_complete = False
 _project_root: Path | None = None
 
 
-async def handle_diagnostics(params: dict[str, Any]):
-    """Handle diagnostics notification from pyright."""
+def handle_diagnostics_notification(method: str, params: dict[str, Any]) -> None:
+    """Handle diagnostics notification from any pyright client.
+
+    This is called by the manager when any client publishes diagnostics.
+    The diagnostics are already stored per-environment in the manager.
+    """
     uri = params.get("uri", "")
-    diagnostics = params.get("diagnostics", [])
-    current_diagnostics[uri] = diagnostics
-    logger.info(f"Received {len(diagnostics)} diagnostics for {uri}")
+    diags = params.get("diagnostics", [])
+    env_id = params.get("_env_id", "unknown")
+    logger.info(f"Received {len(diags)} diagnostics for {uri} (env: {env_id})")
 
 
 @asynccontextmanager
 async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
-    """Manage the lifecycle of the pyright client."""
-    global pyright, initialization_complete
+    """Manage the lifecycle of the pyright client manager."""
+    global manager, initialization_complete
 
     # Startup
     project_root = _project_root or Path.cwd()
@@ -83,14 +83,16 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
             "Consider creating pyrightconfig.json for better results."
         )
 
-    # Read pyright configuration
-    pyright_config = read_pyright_config(project_root)
-
-    pyright = PyrightClient(project_root, pyright_config)
-    pyright.on_notification("textDocument/publishDiagnostics", handle_diagnostics)
+    # Create manager and discover environments
+    manager = PyrightClientManager(
+        project_root,
+        notification_handler=handle_diagnostics_notification,
+    )
 
     try:
-        await pyright.start()
+        # Start the root environment's client for backward compatibility
+        await manager.start_root_client()
+
         # Give pyright more time to analyze the project initially
         logger.info("Waiting for pyright to analyze the project...")
         await asyncio.sleep(2.0)
@@ -104,9 +106,9 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
 
     # Shutdown
     initialization_complete = False
-    if pyright:
-        await pyright.shutdown()
-        pyright = None
+    if manager:
+        await manager.shutdown_all()
+        manager = None
 
 
 # Create FastMCP server instance with lifespan
@@ -145,6 +147,7 @@ MCP server providing Pyright LSP features for Python code intelligence.
 ## Server Management
 | Tool | Purpose |
 |------|---------|
+| list_environments | List discovered Python environments and their status |
 | restart_server | Restart Pyright after config changes |
 
 ## Typical Workflow
@@ -161,34 +164,70 @@ hasMore for additional results.
 )
 
 
+def get_manager() -> PyrightClientManager:
+    """Get the global manager instance.
+
+    Raises:
+        PyrightNotInitializedError: If manager is not initialized
+    """
+    if not manager:
+        raise PyrightNotInitializedError("Manager is not initialized")
+    return manager
+
+
 def ensure_pyright() -> PyrightClient:
-    """Ensure pyright is initialized and return the client.
+    """Ensure pyright is initialized and return the root client.
+
+    This is for backward compatibility with tools that don't yet
+    support multi-environment routing.
 
     Raises:
         PyrightNotInitializedError: If pyright is not initialized or ready
     """
-    if not pyright:
-        raise PyrightNotInitializedError("pyright is not initialized")
-    if not pyright.is_initialized():
+    mgr = get_manager()
+    root_env = mgr.root_environment
+    if not root_env:
+        raise PyrightNotInitializedError("No root environment found")
+    if not root_env.client:
+        raise PyrightNotInitializedError("Root environment client not started")
+    if not root_env.client.is_initialized():
         if initialization_complete:
             raise PyrightNotInitializedError(
                 "pyright client is not properly initialized"
             )
         else:
             raise PyrightNotInitializedError("pyright is still initializing")
-    return pyright
+    return root_env.client
 
 
-async def ensure_pyright_indexed() -> PyrightClient:
-    """Ensure pyright is initialized and has indexed the project.
+async def ensure_pyright_indexed(file_path: str | None = None) -> PyrightClient:
+    """Ensure pyright is initialized and return the appropriate client.
 
-    This is a convenience function for tools that need to wait for
-    pyright to be fully ready.
+    If file_path is provided, returns the client for that file's environment.
+    Otherwise, returns the root environment client.
+
+    Args:
+        file_path: Optional path to route to the correct environment
 
     Raises:
         PyrightNotInitializedError: If pyright is not initialized
     """
-    return ensure_pyright()
+    mgr = get_manager()
+
+    if file_path:
+        # Route to the correct environment for this file
+        client = await mgr.get_client_for_file(file_path)
+        if not client.is_initialized():
+            if initialization_complete:
+                raise PyrightNotInitializedError(
+                    f"Client for {file_path} is not properly initialized"
+                )
+            else:
+                raise PyrightNotInitializedError("pyright is still initializing")
+        return client
+    else:
+        # Fall back to root environment
+        return ensure_pyright()
 
 
 async def ensure_file_open(
@@ -204,13 +243,19 @@ async def ensure_file_open(
     Returns:
         True if file is open, False if opening failed
     """
-    if file_uri in opened_files:
+    mgr = get_manager()
+
+    # Check if already opened in this environment
+    if mgr.is_file_opened(file_path, file_uri):
         return True
 
     try:
         # Read file content
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
+
+        # Get document version
+        version = mgr.increment_doc_version(file_path, file_uri)
 
         # Send didOpen notification
         await client.notify(
@@ -219,13 +264,14 @@ async def ensure_file_open(
                 "textDocument": {
                     "uri": file_uri,
                     "languageId": "python",
-                    "version": 1,
+                    "version": version,
                     "text": content,
                 }
             },
         )
 
-        opened_files.add(file_uri)
+        # Track the file as opened
+        mgr.mark_file_opened(file_path, file_uri, version)
         return True
     except Exception as e:
         logger.error(f"Failed to open file {file_path}: {e}")
@@ -243,6 +289,7 @@ mcp.tool(document_symbols)
 mcp.tool(workspace_symbols)
 mcp.tool(diagnostics)
 mcp.tool(rename)
+mcp.tool(list_environments)
 mcp.tool(restart_server)
 
 

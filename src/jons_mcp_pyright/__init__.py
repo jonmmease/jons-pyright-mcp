@@ -8,6 +8,11 @@ from .constants import (
     REQUEST_TIMEOUT,
     SHUTDOWN_TIMEOUT,
 )
+from .environment import (
+    EnvironmentState,
+    discover_environments,
+    get_environment_for_file,
+)
 from .exceptions import (
     LSPRequestError,
     Position,
@@ -16,12 +21,14 @@ from .exceptions import (
     Range,
 )
 from .lsp_client import PyrightClient
+from .manager import PyrightClientManager
 from .server import (
-    current_diagnostics,
     ensure_pyright,
+    ensure_pyright_indexed,
+    get_manager,
     main,
+    manager,
     mcp,
-    pyright,
 )
 from .tools import (
     definition,
@@ -54,11 +61,16 @@ __all__ = [
     "PyrightNotInitializedError",
     "Range",
     "PyrightClient",
-    "current_diagnostics",
+    "PyrightClientManager",
+    "EnvironmentState",
+    "discover_environments",
+    "get_environment_for_file",
     "ensure_pyright",
+    "ensure_pyright_indexed",
+    "get_manager",
     "main",
+    "manager",
     "mcp",
-    "pyright",
     "apply_pagination",
     "ensure_file_uri",
     "symbol_info",

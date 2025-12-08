@@ -9,6 +9,8 @@ import pytest
 
 from jons_mcp_pyright import ensure_file_uri, ensure_pyright
 from jons_mcp_pyright import server as server_module
+from jons_mcp_pyright.manager import PyrightClientManager
+from jons_mcp_pyright.environment import EnvironmentState
 from jons_mcp_pyright.tools import (
     definition,
     diagnostics,
@@ -31,7 +33,56 @@ def create_mock_client():
     mock_client._initialized = True
     mock_client.is_initialized = MagicMock(return_value=True)
     mock_client.notify = AsyncMock()  # For file open notifications
+    mock_client.project_root = Path("/test/project")
     return mock_client
+
+
+def setup_mock_manager(mock_client, tmp_path=None):
+    """Set up a mock manager with the given client.
+
+    Args:
+        mock_client: The mock PyrightClient to use
+        tmp_path: Optional tmp_path for creating environment state
+
+    Returns:
+        The mock manager
+    """
+    project_root = tmp_path if tmp_path else Path("/test/project")
+    mock_client.project_root = project_root
+
+    # Create a mock environment state
+    mock_env = MagicMock(spec=EnvironmentState)
+    mock_env.env_id = str(project_root)
+    mock_env.project_root = project_root
+    mock_env.venv_path = None
+    mock_env.last_accessed = None
+    mock_env.client = mock_client
+    mock_env.opened_files = set()
+    mock_env.doc_versions = {}
+    mock_env.diagnostics = {}
+
+    # Create a mock manager
+    mock_manager = MagicMock(spec=PyrightClientManager)
+    mock_manager.root_environment = mock_env
+    mock_manager.environments = {str(project_root): mock_env}
+    mock_manager.get_environment_for_file = MagicMock(return_value=mock_env)
+    mock_manager.get_client_for_file = AsyncMock(return_value=mock_client)
+    mock_manager.is_file_opened = MagicMock(return_value=False)
+    mock_manager.mark_file_opened = MagicMock()
+    mock_manager.increment_doc_version = MagicMock(return_value=1)
+    mock_manager.get_all_diagnostics = MagicMock(return_value={})
+    mock_manager.get_diagnostics_for_file = MagicMock(return_value=[])
+    mock_manager.get_diagnostics_for_environment = MagicMock(return_value={})
+    # Return list of (env_id, client) tuples for workspace_symbols
+    mock_manager.get_all_active_clients = MagicMock(
+        return_value=[(str(project_root), mock_client)]
+    )
+    mock_manager._start_client = AsyncMock()
+
+    server_module.manager = mock_manager
+    server_module.initialization_complete = True
+
+    return mock_manager
 
 
 class TestUtilityFunctions:
@@ -56,17 +107,15 @@ class TestUtilityFunctions:
         assert ensure_file_uri(file_path) == expected
 
     def test_ensure_pyright_not_initialized(self):
-        """Test ensure_pyright when client is not initialized."""
-        server_module.pyright = None
-        with pytest.raises(Exception, match="pyright is not initialized"):
+        """Test ensure_pyright when manager is not initialized."""
+        server_module.manager = None
+        with pytest.raises(Exception, match="Manager is not initialized"):
             ensure_pyright()
 
-    def test_ensure_pyright_initialized(self):
+    def test_ensure_pyright_initialized(self, tmp_path: Path):
         """Test ensure_pyright with initialized client."""
-        mock_client = MagicMock()
-        mock_client.is_initialized = MagicMock(return_value=True)
-        server_module.pyright = mock_client
-        server_module.initialization_complete = True
+        mock_client = create_mock_client()
+        setup_mock_manager(mock_client, tmp_path)
 
         result = ensure_pyright()
         assert result == mock_client
@@ -88,10 +137,8 @@ class TestCoreLanguageFeatures:
                 "contents": {"kind": "markdown", "value": "Test hover info"}
             }
         )
-        mock_client.notify = AsyncMock()  # Mock notify for file open
 
-        server_module.pyright = mock_client
-        server_module.initialization_complete = True
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await symbol_info(
@@ -108,14 +155,12 @@ class TestCoreLanguageFeatures:
         )
 
     @pytest.mark.asyncio
-    async def test_symbol_info_no_info(self):
+    async def test_symbol_info_no_info(self, tmp_path: Path):
         """Test symbol_info tool with no information."""
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=None)
-        mock_client.notify = AsyncMock()
 
-        server_module.pyright = mock_client
-        server_module.initialization_complete = True
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await symbol_info(
@@ -125,12 +170,12 @@ class TestCoreLanguageFeatures:
         assert result == {"contents": "No symbol information available"}
 
     @pytest.mark.asyncio
-    async def test_symbol_info_still_initializing(self):
+    async def test_symbol_info_still_initializing(self, tmp_path: Path):
         """Test symbol_info tool when pyright is still initializing."""
         mock_client = create_mock_client()
         mock_client.is_initialized = MagicMock(return_value=False)
 
-        server_module.pyright = mock_client
+        setup_mock_manager(mock_client, tmp_path)
         server_module.initialization_complete = False
 
         mock_ctx = AsyncMock()
@@ -143,7 +188,7 @@ class TestCoreLanguageFeatures:
         }
 
     @pytest.mark.asyncio
-    async def test_definition(self):
+    async def test_definition(self, tmp_path: Path):
         """Test definition tool."""
         mock_location = {
             "uri": "file:///test.py",
@@ -156,7 +201,7 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_location)
 
-        server_module.pyright = mock_client
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await definition(
@@ -183,7 +228,7 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_location)
 
-        server_module.pyright = mock_client
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await type_definition(
@@ -209,7 +254,7 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_locations)
 
-        server_module.pyright = mock_client
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await implementation(
@@ -236,7 +281,7 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_refs)
 
-        server_module.pyright = mock_client
+        setup_mock_manager(mock_client, tmp_path)
 
         result = await references(
             file_path="test.py", line=10, character=5, include_declaration=False
@@ -264,7 +309,7 @@ class TestCoreLanguageFeatures:
         )
 
     @pytest.mark.asyncio
-    async def test_document_symbols(self):
+    async def test_document_symbols(self, tmp_path: Path):
         """Test document_symbols tool."""
         mock_symbols = [
             {
@@ -280,7 +325,7 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_symbols)
 
-        server_module.pyright = mock_client
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await document_symbols(file_path="test.py", ctx=mock_ctx)
@@ -302,7 +347,7 @@ class TestCoreLanguageFeatures:
         assert "add" in names
 
     @pytest.mark.asyncio
-    async def test_workspace_symbols(self):
+    async def test_workspace_symbols(self, tmp_path: Path):
         """Test workspace_symbols tool."""
         mock_symbols = [
             {"name": "Calculator", "location": {"uri": "file:///src/calc.py"}},
@@ -312,7 +357,7 @@ class TestCoreLanguageFeatures:
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=mock_symbols)
 
-        server_module.pyright = mock_client
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await workspace_symbols(query="calc", ctx=mock_ctx)
@@ -330,19 +375,80 @@ class TestCoreLanguageFeatures:
         expected_names = [item["name"] for item in mock_symbols]
         assert set(names) == set(expected_names)
 
+    @pytest.mark.asyncio
+    async def test_workspace_symbols_multi_env_requires_env_id(self, tmp_path: Path):
+        """Test workspace_symbols requires env_id when multiple environments exist."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # Add a second environment to force env_id requirement
+        mock_env2 = MagicMock(spec=EnvironmentState)
+        mock_env2.env_id = "/other/project"
+        mock_env2.client = None
+        mock_manager.environments["/other/project"] = mock_env2
+
+        result = await workspace_symbols(query="test", ctx=None)
+
+        # Should return error with available environments
+        assert "error" in result
+        assert "Multiple environments exist" in result["error"]
+        assert "available_environments" in result
+        assert str(tmp_path) in result["available_environments"]
+        assert "/other/project" in result["available_environments"]
+
+    @pytest.mark.asyncio
+    async def test_workspace_symbols_invalid_env_id(self, tmp_path: Path):
+        """Test workspace_symbols with invalid env_id."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # Add a second environment so validation kicks in
+        mock_env2 = MagicMock(spec=EnvironmentState)
+        mock_env2.env_id = "/other/project"
+        mock_env2.client = None
+        mock_manager.environments["/other/project"] = mock_env2
+
+        result = await workspace_symbols(query="test", env_id="/nonexistent", ctx=None)
+
+        # Should return error with available environments
+        assert "error" in result
+        assert "Unknown environment" in result["error"]
+        assert "available_environments" in result
+
+    @pytest.mark.asyncio
+    async def test_workspace_symbols_with_env_id(self, tmp_path: Path):
+        """Test workspace_symbols with explicit env_id."""
+        mock_symbols = [
+            {"name": "MyClass", "location": {"uri": "file:///src/test.py"}},
+        ]
+
+        mock_client = create_mock_client()
+        mock_client.request = AsyncMock(return_value=mock_symbols)
+        setup_mock_manager(mock_client, tmp_path)
+
+        result = await workspace_symbols(
+            query="My", env_id=str(tmp_path), ctx=None
+        )
+
+        assert "items" in result
+        assert len(result["items"]) == 1
+        assert result["items"][0]["name"] == "MyClass"
+
 
 class TestCodeIntelligence:
     """Test code intelligence tools."""
 
     @pytest.mark.asyncio
-    async def test_diagnostics_all(self):
+    async def test_diagnostics_all(self, tmp_path: Path):
         """Test diagnostics tool for all files."""
         mock_diagnostics = {
             "file:///test1.py": [{"severity": 1, "message": "Error 1"}],
             "file:///test2.py": [{"severity": 2, "message": "Warning 1"}],
         }
 
-        server_module.current_diagnostics = mock_diagnostics
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+        mock_manager.get_all_diagnostics = MagicMock(return_value=mock_diagnostics)
 
         result = await diagnostics()
 
@@ -356,15 +462,15 @@ class TestCodeIntelligence:
         assert len(result["items"]) == 2
 
     @pytest.mark.asyncio
-    async def test_diagnostics_single_file(self):
+    async def test_diagnostics_single_file(self, tmp_path: Path):
         """Test diagnostics tool for single file."""
         mock_client = create_mock_client()
-        server_module.pyright = mock_client
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
 
-        server_module.current_diagnostics = {
-            "file:///test1.py": [{"severity": 1, "message": "Error 1"}],
-            "file:///test2.py": [{"severity": 2, "message": "Warning 1"}],
-        }
+        # Set up diagnostics for the environment
+        mock_manager.get_diagnostics_for_file = MagicMock(
+            return_value=[{"severity": 1, "message": "Error 1"}]
+        )
 
         result = await diagnostics(file_path="/test1.py")
 
@@ -379,7 +485,7 @@ class TestCodeIntelligence:
         assert result["items"][0]["message"] == "Error 1"
 
     @pytest.mark.asyncio
-    async def test_rename(self):
+    async def test_rename(self, tmp_path: Path):
         """Test rename tool."""
         mock_edit = {
             "changes": {
@@ -396,7 +502,7 @@ class TestCodeIntelligence:
             mock_edit,  # rename
         ]
 
-        server_module.pyright = mock_client
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await rename(
@@ -410,12 +516,12 @@ class TestCodeIntelligence:
         assert result == mock_edit
 
     @pytest.mark.asyncio
-    async def test_rename_not_allowed(self):
+    async def test_rename_not_allowed(self, tmp_path: Path):
         """Test rename tool when rename is not allowed."""
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=None)
 
-        server_module.pyright = mock_client
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await rename(
@@ -433,45 +539,115 @@ class TestPyrightExtensions:
     """Test pyright-specific extension tools."""
 
     @pytest.mark.asyncio
-    async def test_restart_server(self):
-        """Test restart_server tool."""
-        # Mock existing client
-        old_client = AsyncMock()
-        old_client.shutdown = AsyncMock()
-        old_client.project_root = Path("/test/project")
-        server_module.pyright = old_client
+    async def test_restart_server_all(self, tmp_path: Path):
+        """Test restart_server tool restarts all environments."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
 
-        # Mock new client creation
-        new_client = AsyncMock()
-        new_client.start = AsyncMock()
-        new_client.on_notification = MagicMock()
-
-        mock_ctx = AsyncMock()
-
-        # PyrightClient is imported lazily inside the function from ..lsp_client
-        with patch(
-            "jons_mcp_pyright.lsp_client.PyrightClient", return_value=new_client
-        ):
-            with patch(
-                "jons_mcp_pyright.lsp_client.read_pyright_config",
-                return_value={},
-            ):
-                result = await restart_server(ctx=mock_ctx)
-
-        assert result == "pyright server restarted successfully"
-        old_client.shutdown.assert_called_once()
-        new_client.start.assert_called_once()
-        assert server_module.pyright == new_client
-
-    @pytest.mark.asyncio
-    async def test_restart_server_not_running(self):
-        """Test restart_server tool when server not running."""
-        server_module.pyright = None
+        # Set up the mock manager for restart_all
+        mock_manager.restart_all = AsyncMock()
 
         mock_ctx = AsyncMock()
         result = await restart_server(ctx=mock_ctx)
 
-        assert result == "pyright server is not running"
+        assert result == "all pyright servers restarted successfully"
+        mock_manager.restart_all.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_restart_server_single_environment(self, tmp_path: Path):
+        """Test restart_server tool for a specific file."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # Set up the mock manager for restart_environment
+        mock_manager.restart_environment = AsyncMock()
+
+        mock_ctx = AsyncMock()
+        result = await restart_server(file_path="test.py", ctx=mock_ctx)
+
+        assert "pyright server restarted for environment containing" in result
+        # restart_environment is called with the env_id (project root), not the file path
+        mock_manager.restart_environment.assert_called_once_with(str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_restart_server_by_env_id(self, tmp_path: Path):
+        """Test restart_server tool with env_id parameter."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # Set up the mock manager for restart_environment
+        mock_manager.restart_environment = AsyncMock()
+
+        mock_ctx = AsyncMock()
+        result = await restart_server(env_id=str(tmp_path), ctx=mock_ctx)
+
+        assert f"pyright server restarted for environment: {tmp_path}" in result
+        mock_manager.restart_environment.assert_called_once_with(str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_restart_server_env_id_not_found(self, tmp_path: Path):
+        """Test restart_server tool with non-existent env_id."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # Set up the mock manager to raise ValueError for unknown env_id
+        mock_manager.restart_environment = AsyncMock(
+            side_effect=ValueError("No environment found with ID: /nonexistent")
+        )
+
+        mock_ctx = AsyncMock()
+        result = await restart_server(env_id="/nonexistent", ctx=mock_ctx)
+
+        assert "Error:" in result
+
+    @pytest.mark.asyncio
+    async def test_restart_server_not_running(self):
+        """Test restart_server tool when server not running."""
+        from jons_mcp_pyright.exceptions import PyrightNotInitializedError
+
+        server_module.manager = None
+
+        mock_ctx = AsyncMock()
+        with pytest.raises(PyrightNotInitializedError):
+            await restart_server(ctx=mock_ctx)
+
+
+class TestListEnvironments:
+    """Test list_environments tool."""
+
+    @pytest.mark.asyncio
+    async def test_list_environments(self, tmp_path: Path):
+        """Test listing environments."""
+        from jons_mcp_pyright.tools.extensions import list_environments
+
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        result = await list_environments()
+
+        assert "total" in result
+        assert "active_count" in result
+        assert "environments" in result
+        assert result["total"] == 1  # Root environment
+        assert result["active_count"] == 1
+        assert len(result["environments"]) == 1
+
+        env = result["environments"][0]
+        assert env["env_id"] == str(tmp_path)
+        assert env["project_root"] == str(tmp_path)
+        assert env["is_active"] is True
+        assert "opened_files_count" in env
+
+    @pytest.mark.asyncio
+    async def test_list_environments_not_running(self):
+        """Test list_environments when server not running."""
+        from jons_mcp_pyright.exceptions import PyrightNotInitializedError
+        from jons_mcp_pyright.tools.extensions import list_environments
+
+        server_module.manager = None
+
+        with pytest.raises(PyrightNotInitializedError):
+            await list_environments()
 
 
 class TestTypeInfo:
@@ -543,8 +719,7 @@ obj = MyClass()
             ]
         )
 
-        server_module.pyright = mock_client
-        server_module.initialization_complete = True
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await type_info(
@@ -592,8 +767,7 @@ obj = MyClass()
             ]
         )
 
-        server_module.pyright = mock_client
-        server_module.initialization_complete = True
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await type_info(
@@ -621,8 +795,7 @@ obj = MyClass()
             ]
         )
 
-        server_module.pyright = mock_client
-        server_module.initialization_complete = True
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await type_info(
@@ -663,8 +836,7 @@ obj = MyClass()
 
         mock_client.request = AsyncMock(side_effect=side_effects)
 
-        server_module.pyright = mock_client
-        server_module.initialization_complete = True
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
 
@@ -714,8 +886,7 @@ obj = MyClass()
             ]
         )
 
-        server_module.pyright = mock_client
-        server_module.initialization_complete = True
+        setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
         result = await type_info(

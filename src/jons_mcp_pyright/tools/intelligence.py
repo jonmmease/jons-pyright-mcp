@@ -10,6 +10,7 @@ from ..utils import apply_pagination, diagnostic_sort_key, ensure_file_uri
 
 async def diagnostics(
     file_path: str | None = None,
+    env_id: str | None = None,
     limit: int = DEFAULT_PAGINATION_LIMIT,
     offset: int = DEFAULT_PAGINATION_OFFSET,
     ctx: Context | None = None,
@@ -20,9 +21,15 @@ async def diagnostics(
     and other issues detected by Pyright.
 
     Args:
-        file_path: Optional path to specific file. If None, returns all diagnostics.
+        file_path: Optional path to specific file. Takes priority over env_id.
+        env_id: Optional environment ID to get diagnostics from.
         limit: Maximum items to return (default: 20)
         offset: Number of items to skip for pagination (default: 0)
+
+    Query modes:
+    - file_path provided: Returns diagnostics for that file's environment only
+    - env_id provided: Returns all diagnostics for that specific environment
+    - Neither provided: Aggregates diagnostics from all active environments
 
     Returns {items, totalItems, hasMore, nextOffset} where each item has:
     - uri: File URI
@@ -30,27 +37,48 @@ async def diagnostics(
     - range: Location in file
     - message: Description of the issue
     - source: "Pyright"
+    - environment: (optional) Environment ID when aggregating multiple envs
 
     Paginated: use limit/offset, check hasMore for more results.
     """
-    from ..server import current_diagnostics, ensure_file_open, ensure_pyright_indexed
+    from ..server import ensure_file_open, ensure_pyright_indexed, get_manager
+
+    mgr = get_manager()
 
     # Collect all diagnostics
     all_diagnostics: list[dict[str, Any]] = []
 
     if file_path:
+        # Mode 1: Get diagnostics for specific file
         file_uri = ensure_file_uri(file_path)
         # Ensure file is open
-        client = await ensure_pyright_indexed()
+        client = await ensure_pyright_indexed(file_path)
         await ensure_file_open(client, file_path, file_uri)
 
-        # Get diagnostics for specific file
-        file_diags = current_diagnostics.get(file_uri, [])
+        # Get diagnostics for specific file from the manager
+        file_diags = mgr.get_diagnostics_for_file(file_path)
         for diag in file_diags:
             all_diagnostics.append({**diag, "uri": file_uri})
+
+    elif env_id:
+        # Mode 2: Get all diagnostics for specific environment
+        try:
+            env_diagnostics = mgr.get_diagnostics_for_environment(env_id)
+            for uri, diags in env_diagnostics.items():
+                for diag in diags:
+                    all_diagnostics.append({**diag, "uri": uri, "environment": env_id})
+        except ValueError as e:
+            return {
+                "error": str(e),
+                "items": [],
+                "totalItems": 0,
+                "hasMore": False,
+            }
+
     else:
-        # Get all diagnostics from all files
-        for uri, diags in current_diagnostics.items():
+        # Mode 3: Aggregate diagnostics from all active environments
+        all_env_diagnostics = mgr.get_all_diagnostics()
+        for uri, diags in all_env_diagnostics.items():
             for diag in diags:
                 all_diagnostics.append({**diag, "uri": uri})
 
@@ -79,7 +107,7 @@ async def rename(
     """
     from ..server import ensure_file_open, ensure_pyright_indexed
 
-    client = await ensure_pyright_indexed()
+    client = await ensure_pyright_indexed(file_path)
     file_uri = ensure_file_uri(file_path)
 
     if ctx:

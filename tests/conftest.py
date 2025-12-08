@@ -15,7 +15,7 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from jons_mcp_pyright import PyrightClient
+from jons_mcp_pyright import PyrightClient, PyrightClientManager
 
 
 @pytest.fixture
@@ -249,12 +249,12 @@ async def pyright_client(temp_python_project: Path) -> AsyncGenerator[PyrightCli
         has_pyright = True
     except ImportError:
         has_pyright = False
-    
+
     if not has_pyright and not shutil.which("pyright-langserver"):
         pytest.skip("pyright not found - install with 'pip install pyright'")
-    
+
     client = PyrightClient(temp_python_project)
-    
+
     try:
         await client.start()
         # Give pyright a moment to analyze the project
@@ -262,6 +262,43 @@ async def pyright_client(temp_python_project: Path) -> AsyncGenerator[PyrightCli
         yield client
     finally:
         await client.shutdown()
+
+
+@pytest.fixture
+async def pyright_manager(temp_python_project: Path) -> AsyncGenerator[PyrightClientManager, None]:
+    """Create and start a PyrightClientManager for integration testing.
+
+    This fixture sets up the manager in the server module so tools work correctly.
+    """
+    # Check if pyright is available
+    try:
+        import pyright
+        has_pyright = True
+    except ImportError:
+        has_pyright = False
+
+    if not has_pyright and not shutil.which("pyright-langserver"):
+        pytest.skip("pyright not found - install with 'pip install pyright'")
+
+    from jons_mcp_pyright import server as server_module
+
+    # Create and start the manager
+    manager = PyrightClientManager(temp_python_project)
+
+    try:
+        await manager.start_root_client()
+        # Give pyright a moment to analyze the project
+        await asyncio.sleep(0.5)
+
+        # Set up server module globals
+        server_module.manager = manager
+        server_module.initialization_complete = True
+
+        yield manager
+    finally:
+        server_module.initialization_complete = False
+        await manager.shutdown_all()
+        server_module.manager = None
 
 
 @pytest.fixture
@@ -374,16 +411,189 @@ def mock_initialization_state():
     from jons_mcp_pyright import server as server_module
     # Save original state
     original_complete = server_module.initialization_complete
-    original_pyright = server_module.pyright
-    original_opened_files = server_module.opened_files
+    original_manager = server_module.manager
 
     # Set test state
     server_module.initialization_complete = True
-    server_module.opened_files = set()
 
     yield
 
     # Restore original state
     server_module.initialization_complete = original_complete
-    server_module.pyright = original_pyright
-    server_module.opened_files = original_opened_files
+    server_module.manager = original_manager
+
+
+@pytest.fixture
+def multi_env_project(tmp_path: Path) -> Path:
+    """Create a multi-environment Python project for testing.
+
+    Structure:
+    /root
+        pyproject.toml
+        pyrightconfig.json
+        /src
+            __init__.py
+            main.py
+        /packages
+            /pkg-a
+                pyproject.toml
+                pyrightconfig.json
+                /src
+                    __init__.py
+                    module_a.py
+            /pkg-b
+                pyproject.toml
+                pyrightconfig.json
+                /src
+                    __init__.py
+                    module_b.py
+    """
+    # Root project
+    root_pyproject = tmp_path / "pyproject.toml"
+    root_pyproject.write_text("""[project]
+name = "root-project"
+version = "0.1.0"
+requires-python = ">=3.10"
+""")
+
+    root_pyrightconfig = tmp_path / "pyrightconfig.json"
+    root_pyrightconfig.write_text(json.dumps({
+        "include": ["src"],
+        "typeCheckingMode": "basic",
+        "pythonVersion": "3.10",
+    }, indent=2))
+
+    root_src = tmp_path / "src"
+    root_src.mkdir()
+    (root_src / "__init__.py").write_text('"""Root package."""\n')
+    (root_src / "main.py").write_text('''"""Root main module."""
+
+def root_func() -> str:
+    """Function defined in root project."""
+    return "root"
+
+ROOT_CONSTANT = 42
+''')
+
+    # Package A
+    pkg_a = tmp_path / "packages" / "pkg-a"
+    pkg_a.mkdir(parents=True)
+
+    pkg_a_pyproject = pkg_a / "pyproject.toml"
+    pkg_a_pyproject.write_text("""[project]
+name = "pkg-a"
+version = "0.1.0"
+requires-python = ">=3.10"
+""")
+
+    pkg_a_pyrightconfig = pkg_a / "pyrightconfig.json"
+    pkg_a_pyrightconfig.write_text(json.dumps({
+        "include": ["src"],
+        "typeCheckingMode": "strict",
+        "pythonVersion": "3.10",
+    }, indent=2))
+
+    pkg_a_src = pkg_a / "src"
+    pkg_a_src.mkdir()
+    (pkg_a_src / "__init__.py").write_text('"""Package A."""\n')
+    (pkg_a_src / "module_a.py").write_text('''"""Module A."""
+
+from typing import List
+
+def func_a(items: List[str]) -> int:
+    """Function in package A."""
+    return len(items)
+
+class ClassA:
+    """Class defined in package A."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def greet(self) -> str:
+        """Greet using name."""
+        return f"Hello from A, {self.name}!"
+
+PKG_A_CONSTANT = "pkg_a"
+''')
+
+    # Package B
+    pkg_b = tmp_path / "packages" / "pkg-b"
+    pkg_b.mkdir(parents=True)
+
+    pkg_b_pyproject = pkg_b / "pyproject.toml"
+    pkg_b_pyproject.write_text("""[project]
+name = "pkg-b"
+version = "0.1.0"
+requires-python = ">=3.10"
+""")
+
+    pkg_b_pyrightconfig = pkg_b / "pyrightconfig.json"
+    pkg_b_pyrightconfig.write_text(json.dumps({
+        "include": ["src"],
+        "typeCheckingMode": "basic",
+        "pythonVersion": "3.10",
+    }, indent=2))
+
+    pkg_b_src = pkg_b / "src"
+    pkg_b_src.mkdir()
+    (pkg_b_src / "__init__.py").write_text('"""Package B."""\n')
+    (pkg_b_src / "module_b.py").write_text('''"""Module B."""
+
+from typing import Dict
+
+def func_b(data: Dict[str, int]) -> int:
+    """Function in package B."""
+    return sum(data.values())
+
+class ClassB:
+    """Class defined in package B."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def compute(self) -> int:
+        """Compute double the value."""
+        return self.value * 2
+
+PKG_B_CONSTANT = "pkg_b"
+''')
+
+    return tmp_path
+
+
+@pytest.fixture
+async def multi_env_manager(multi_env_project: Path) -> AsyncGenerator[PyrightClientManager, None]:
+    """Create PyrightClientManager for multi-environment testing.
+
+    This discovers all three environments and sets up the server module.
+    """
+    # Check if pyright is available
+    try:
+        import pyright
+        has_pyright = True
+    except ImportError:
+        has_pyright = False
+
+    if not has_pyright and not shutil.which("pyright-langserver"):
+        pytest.skip("pyright not found - install with 'pip install pyright'")
+
+    from jons_mcp_pyright import server as server_module
+
+    # Create and start the manager (will discover all environments)
+    manager = PyrightClientManager(multi_env_project)
+
+    try:
+        await manager.start_root_client()
+        # Give pyright a moment to analyze
+        await asyncio.sleep(1.0)
+
+        # Set up server module globals
+        server_module.manager = manager
+        server_module.initialization_complete = True
+
+        yield manager
+    finally:
+        server_module.initialization_complete = False
+        await manager.shutdown_all()
+        server_module.manager = None

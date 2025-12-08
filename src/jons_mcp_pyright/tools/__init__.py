@@ -1,6 +1,6 @@
 """MCP tools for Pyright."""
 
-from .extensions import restart_server
+from .extensions import list_environments, restart_server
 from .intelligence import diagnostics, rename
 from .language import (
     definition,
@@ -27,5 +27,6 @@ __all__ = [
     "diagnostics",
     "rename",
     # Extension tools
+    "list_environments",
     "restart_server",
 ]

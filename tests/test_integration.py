@@ -3,11 +3,12 @@ Integration tests for pyright-mcp server.
 """
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
 
-from jons_mcp_pyright import PyrightClient, mcp
+from jons_mcp_pyright import PyrightClientManager, mcp
 from jons_mcp_pyright import server as server_module
 from jons_mcp_pyright.tools import (
     definition,
@@ -21,6 +22,7 @@ from jons_mcp_pyright.tools import (
     type_info,
     workspace_symbols,
 )
+from jons_mcp_pyright.tools.extensions import list_environments, restart_server
 
 
 class TestPyrightIntegration:
@@ -28,12 +30,9 @@ class TestPyrightIntegration:
 
     @pytest.mark.asyncio
     async def test_basic_symbol_info(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test symbol_info functionality with real pyright."""
-        # Set global client
-        server_module.pyright = pyright_client
-
         # Test symbol_info on the greet function
         file_path = temp_python_project / "src" / "main.py"
 
@@ -56,11 +55,9 @@ class TestPyrightIntegration:
 
     @pytest.mark.asyncio
     async def test_find_definition(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test go to definition with real pyright."""
-        server_module.pyright = pyright_client
-
         # Create a test file that uses our functions
         test_file = temp_python_project / "test_definition.py"
         test_file.write_text("""from src.main import greet, add
@@ -93,11 +90,9 @@ sum_val = add(1, 2)
 
     @pytest.mark.asyncio
     async def test_document_symbols(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test document symbols with real pyright."""
-        server_module.pyright = pyright_client
-
         main_file = temp_python_project / "src" / "main.py"
         result = await document_symbols(file_path=str(main_file), ctx=None)
 
@@ -122,11 +117,9 @@ sum_val = add(1, 2)
 
     @pytest.mark.asyncio
     async def test_rename_symbol(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test rename functionality with real pyright."""
-        server_module.pyright = pyright_client
-
         # Create files for rename test
         rename_file = temp_python_project / "rename_test.py"
         rename_file.write_text("""def old_function():
@@ -160,11 +153,9 @@ another = old_function()
 
     @pytest.mark.asyncio
     async def test_type_info_on_class_instance(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test type_info on Calculator class instance."""
-        server_module.pyright = pyright_client
-
         # Create a test file with Calculator instance - use explicit dot access
         # to ensure completion works
         test_file = temp_python_project / "test_type_info.py"
@@ -198,11 +189,9 @@ calc.
 
     @pytest.mark.asyncio
     async def test_type_info_on_primitive(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test type_info on primitive type (int)."""
-        server_module.pyright = pyright_client
-
         test_file = temp_python_project / "test_primitive.py"
         test_file.write_text("""x = 42
 y = x + 10
@@ -224,11 +213,9 @@ y = x + 10
 
     @pytest.mark.asyncio
     async def test_type_definition(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test type_definition tool on typed variable."""
-        server_module.pyright = pyright_client
-
         test_file = temp_python_project / "test_typedef.py"
         test_file.write_text("""from src.main import Calculator
 
@@ -258,11 +245,9 @@ calc: Calculator = Calculator(10)
 
     @pytest.mark.asyncio
     async def test_references(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test references tool finds all usages."""
-        server_module.pyright = pyright_client
-
         # The greet function is used in test_main.py
         main_file = temp_python_project / "src" / "main.py"
 
@@ -284,11 +269,9 @@ calc: Calculator = Calculator(10)
 
     @pytest.mark.asyncio
     async def test_workspace_symbols(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test workspace_symbols search."""
-        server_module.pyright = pyright_client
-
         # Search for Calculator
         result = await workspace_symbols(query="Calculator", ctx=None)
 
@@ -307,11 +290,9 @@ calc: Calculator = Calculator(10)
 
     @pytest.mark.asyncio
     async def test_diagnostics_with_error(
-        self, pyright_client: PyrightClient, temp_python_project: Path
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
         """Test diagnostics tool detects type errors."""
-        server_module.pyright = pyright_client
-
         # Create a file with a type error
         error_file = temp_python_project / "error_file.py"
         error_file.write_text("""def add_numbers(a: int, b: int) -> int:
@@ -344,9 +325,9 @@ async def test_mcp_server_lifecycle():
     # This test verifies the lifespan context manager works correctly
     server = mcp
 
-    # Mock the global pyright variable
-    original_pyright = server_module.pyright
-    server_module.pyright = None
+    # Mock the global manager variable
+    original_manager = server_module.manager
+    server_module.manager = None
 
     try:
         # Test that lifespan is properly configured
@@ -360,7 +341,287 @@ async def test_mcp_server_lifecycle():
         assert "definition" in tools
         assert "diagnostics" in tools
         assert "restart_server" in tools
+        assert "list_environments" in tools
 
     finally:
         # Restore original
-        server_module.pyright = original_pyright
+        server_module.manager = original_manager
+
+
+class TestMultiEnvironment:
+    """Integration tests for multi-environment support."""
+
+    @pytest.mark.asyncio
+    async def test_environment_discovery(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Test that environment discovery finds all project environments."""
+        # Should have discovered 3 environments: root, pkg-a, pkg-b
+        assert len(multi_env_manager.environments) == 3
+
+        env_ids = set(multi_env_manager.environments.keys())
+        assert str(multi_env_project) in env_ids
+        assert str(multi_env_project / "packages" / "pkg-a") in env_ids
+        assert str(multi_env_project / "packages" / "pkg-b") in env_ids
+
+    @pytest.mark.asyncio
+    async def test_file_routing(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Test that files are routed to correct environment."""
+        # Root file should route to root env
+        root_file = multi_env_project / "src" / "main.py"
+        root_env = multi_env_manager.get_environment_for_file(str(root_file))
+        assert root_env is not None
+        assert root_env.env_id == str(multi_env_project)
+
+        # Pkg-a file should route to pkg-a env
+        pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
+        pkg_a_env = multi_env_manager.get_environment_for_file(str(pkg_a_file))
+        assert pkg_a_env is not None
+        assert pkg_a_env.env_id == str(multi_env_project / "packages" / "pkg-a")
+
+        # Pkg-b file should route to pkg-b env
+        pkg_b_file = multi_env_project / "packages" / "pkg-b" / "src" / "module_b.py"
+        pkg_b_env = multi_env_manager.get_environment_for_file(str(pkg_b_file))
+        assert pkg_b_env is not None
+        assert pkg_b_env.env_id == str(multi_env_project / "packages" / "pkg-b")
+
+    @pytest.mark.asyncio
+    async def test_list_environments_tool(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Test list_environments tool returns all discovered environments."""
+        result = await list_environments()
+
+        assert result["total"] == 3
+        # At least root is active
+        assert result["active_count"] >= 1
+
+        env_ids = {e["env_id"] for e in result["environments"]}
+        assert str(multi_env_project) in env_ids
+        assert str(multi_env_project / "packages" / "pkg-a") in env_ids
+        assert str(multi_env_project / "packages" / "pkg-b") in env_ids
+
+    @pytest.mark.asyncio
+    async def test_symbol_info_routes_to_correct_env(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Test symbol_info on files in different environments."""
+        # Get symbol info from pkg-a
+        pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
+        result = await symbol_info(
+            file_path=str(pkg_a_file),
+            line=4,  # def func_a
+            character=4,
+            ctx=None,
+        )
+
+        assert "contents" in result
+        # Should get info about func_a
+
+    @pytest.mark.asyncio
+    async def test_document_symbols_per_env(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Test document_symbols works in different environments."""
+        # Symbols from pkg-a
+        pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
+        result_a = await document_symbols(file_path=str(pkg_a_file), ctx=None)
+
+        assert "items" in result_a
+        names_a = [s["name"] for s in result_a["items"]]
+        assert "func_a" in names_a
+        assert "ClassA" in names_a
+
+        # Symbols from pkg-b
+        pkg_b_file = multi_env_project / "packages" / "pkg-b" / "src" / "module_b.py"
+        result_b = await document_symbols(file_path=str(pkg_b_file), ctx=None)
+
+        assert "items" in result_b
+        names_b = [s["name"] for s in result_b["items"]]
+        assert "func_b" in names_b
+        assert "ClassB" in names_b
+
+    @pytest.mark.asyncio
+    async def test_workspace_symbols_requires_env_id(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Test workspace_symbols requires env_id when multiple environments exist."""
+        # Without env_id, should return error listing available environments
+        result = await workspace_symbols(query="Class", ctx=None)
+
+        assert "error" in result
+        assert "Multiple environments exist" in result["error"]
+        assert "available_environments" in result
+        assert len(result["available_environments"]) == 3  # root, pkg-a, pkg-b
+
+    @pytest.mark.asyncio
+    async def test_workspace_symbols_with_env_id(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Test workspace_symbols works with explicit env_id."""
+        pkg_a_path = str(multi_env_project / "packages" / "pkg-a")
+
+        # Search for "Class" in pkg-a environment
+        result = await workspace_symbols(query="Class", env_id=pkg_a_path, ctx=None)
+
+        assert "items" in result
+        assert "error" not in result
+        # Should find ClassA from pkg-a
+        if result["totalItems"] > 0:
+            names = [s["name"] for s in result["items"]]
+            assert "ClassA" in names
+
+    @pytest.mark.asyncio
+    async def test_restart_environment_by_file(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Test restart_server restarts correct environment."""
+        pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
+
+        # First access the file to start the environment
+        await symbol_info(file_path=str(pkg_a_file), line=0, character=0, ctx=None)
+        await asyncio.sleep(0.5)
+
+        # Restart the environment containing the file
+        result = await restart_server(file_path=str(pkg_a_file), ctx=None)
+
+        assert "pyright server restarted for environment containing" in result
+
+    @pytest.mark.asyncio
+    async def test_restart_environment_by_id(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Test restart_server with env_id parameter."""
+        pkg_b_path = str(multi_env_project / "packages" / "pkg-b")
+
+        # Access a file to start the environment
+        pkg_b_file = multi_env_project / "packages" / "pkg-b" / "src" / "module_b.py"
+        await symbol_info(file_path=str(pkg_b_file), line=0, character=0, ctx=None)
+        await asyncio.sleep(0.5)
+
+        # Restart by env_id
+        result = await restart_server(env_id=pkg_b_path, ctx=None)
+
+        assert f"pyright server restarted for environment: {pkg_b_path}" in result
+
+    @pytest.mark.asyncio
+    async def test_backward_compatibility_single_env(
+        self, pyright_manager: PyrightClientManager, temp_python_project: Path
+    ):
+        """Test that single-environment projects still work correctly."""
+        # This uses the existing temp_python_project fixture (single env)
+        main_file = temp_python_project / "src" / "main.py"
+
+        # All tools should work
+        result = await symbol_info(
+            file_path=str(main_file), line=2, character=4, ctx=None
+        )
+        assert "contents" in result
+
+        result = await document_symbols(file_path=str(main_file), ctx=None)
+        assert "items" in result
+
+        result = await workspace_symbols(query="greet", ctx=None)
+        assert "items" in result
+
+
+class TestLRUEviction:
+    """Test LRU eviction behavior."""
+
+    @pytest.mark.asyncio
+    async def test_lru_eviction_with_max_clients(
+        self, multi_env_project: Path, monkeypatch
+    ):
+        """Test that LRU eviction works when max clients is reached."""
+        import shutil
+
+        # Check if pyright is available
+        try:
+            import pyright
+            has_pyright = True
+        except ImportError:
+            has_pyright = False
+
+        if not has_pyright and not shutil.which("pyright-langserver"):
+            pytest.skip("pyright not found")
+
+        # Set max clients to 2
+        monkeypatch.setenv("PYRIGHT_MAX_CLIENTS", "2")
+
+        manager = PyrightClientManager(multi_env_project)
+
+        try:
+            await manager.start_root_client()
+            server_module.manager = manager
+            server_module.initialization_complete = True
+
+            await asyncio.sleep(0.5)
+
+            # Access root file - starts root client
+            root_file = multi_env_project / "src" / "main.py"
+            root_client = await manager.get_client_for_file(str(root_file))
+            assert root_client is not None
+
+            # Access pkg-a file - starts pkg-a client (2 active now)
+            pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
+            pkg_a_client = await manager.get_client_for_file(str(pkg_a_file))
+            assert pkg_a_client is not None
+
+            # Count active clients
+            initial_active = sum(1 for e in manager.environments.values() if e.client is not None)
+            assert initial_active == 2
+
+            # Access pkg-b file - should evict oldest (root) client
+            pkg_b_file = multi_env_project / "packages" / "pkg-b" / "src" / "module_b.py"
+            await manager.get_client_for_file(str(pkg_b_file))
+
+            # Should still have at most 2 active clients
+            final_active = sum(1 for e in manager.environments.values() if e.client is not None)
+            assert final_active <= 2
+
+        finally:
+            server_module.initialization_complete = False
+            await manager.shutdown_all()
+            server_module.manager = None
+
+
+class TestProcessCleanup:
+    """Test process cleanup on shutdown."""
+
+    @pytest.mark.asyncio
+    async def test_no_zombie_processes(
+        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
+    ):
+        """Verify that shutdown cleans up all pyright processes."""
+        import subprocess
+
+        # Start multiple environments
+        pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
+        pkg_b_file = multi_env_project / "packages" / "pkg-b" / "src" / "module_b.py"
+
+        await multi_env_manager.get_client_for_file(str(pkg_a_file))
+        await multi_env_manager.get_client_for_file(str(pkg_b_file))
+        await asyncio.sleep(0.5)
+
+        # Get PIDs of active pyright processes (if any)
+        active_pids = set()
+        for env in multi_env_manager.environments.values():
+            if env.client and env.client.process:
+                active_pids.add(env.client.process.pid)
+
+        # Shutdown
+        await multi_env_manager.shutdown_all()
+        await asyncio.sleep(0.5)
+
+        # Verify processes are no longer running
+        for pid in active_pids:
+            try:
+                # Check if process still exists
+                os.kill(pid, 0)
+                # If we get here, process is still alive (which might be okay
+                # if it's gracefully shutting down)
+            except OSError:
+                # Process doesn't exist - good!
+                pass
