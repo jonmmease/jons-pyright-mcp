@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 # Default patterns for virtual environment directories
 DEFAULT_VENV_PATTERNS = [".venv", "venv", ".env"]
 
+# Pixi environment configuration
+PIXI_ENV_VAR = "PYRIGHT_PIXI_ENV"
+DEFAULT_PIXI_ENV = "default"
+
 # Directories to ignore during discovery
 IGNORE_PATTERNS = {
     ".git",
@@ -37,6 +41,58 @@ IGNORE_PATTERNS = {
     "egg-info",
     ".eggs",
 }
+
+
+def resolve_pixi_env(project_root: Path) -> Path | None:
+    """Resolve a pixi environment for the given directory.
+
+    Pixi is a modern package manager that stores environments in
+    `.pixi/envs/<env-name>/`. This function checks for pixi project
+    markers (pixi.lock or pixi.toml) and returns the environment path.
+
+    Args:
+        project_root: Directory to check for pixi environment
+
+    Returns:
+        Path to the pixi environment, or None if not a pixi project
+    """
+    project_root = project_root.resolve()
+
+    # Check for pixi project markers
+    has_pixi_lock = (project_root / "pixi.lock").exists()
+    has_pixi_toml = (project_root / "pixi.toml").exists()
+
+    if not (has_pixi_lock or has_pixi_toml):
+        return None
+
+    # Get environment name from env var or use default
+    env_name = os.environ.get(PIXI_ENV_VAR, DEFAULT_PIXI_ENV)
+
+    # Check if the pixi environment exists
+    pixi_env_path = project_root / ".pixi" / "envs" / env_name
+
+    if not pixi_env_path.is_dir():
+        logger.debug(
+            f"Pixi project found at {project_root} but environment '{env_name}' "
+            f"not found at {pixi_env_path}"
+        )
+        return None
+
+    # Verify it looks like a valid environment (has bin/python)
+    python_paths = [
+        pixi_env_path / "bin" / "python",
+        pixi_env_path / "bin" / "python3",
+        pixi_env_path / "Scripts" / "python.exe",  # Windows support
+    ]
+    for python_path in python_paths:
+        if python_path.exists():
+            logger.debug(f"Found pixi environment at {pixi_env_path}")
+            return pixi_env_path
+
+    logger.debug(
+        f"Pixi environment directory exists at {pixi_env_path} but no Python found"
+    )
+    return None
 
 
 def get_venv_patterns() -> list[str]:
@@ -186,8 +242,10 @@ def resolve_venv_for_root(
 ) -> Path | None:
     """Resolve the virtual environment for a project root.
 
-    Searches for a venv in the project root first, then walks up to parent
-    directories to find a shared venv.
+    Priority order:
+    1. Pixi environment (if pixi.toml or pixi.lock exists)
+    2. Traditional venv patterns (.venv, venv, .env)
+    3. Walk up to parent directories and repeat
 
     Args:
         project_root: The project root directory
@@ -219,18 +277,27 @@ def resolve_venv_for_root(
                         return venv_path
         return None
 
+    def find_env_in_dir(directory: Path) -> Path | None:
+        """Look for pixi env first, then fall back to venv patterns."""
+        # Check for pixi environment first (highest priority)
+        pixi_env = resolve_pixi_env(directory)
+        if pixi_env:
+            return pixi_env
+        # Fall back to traditional venv patterns
+        return find_venv_in_dir(directory)
+
     # First check the project root itself
-    venv = find_venv_in_dir(project_root)
-    if venv:
-        return venv
+    env = find_env_in_dir(project_root)
+    if env:
+        return env
 
     # Walk up to parent directories
     current = project_root.parent
     while current != current.parent:  # Stop at filesystem root
-        venv = find_venv_in_dir(current)
-        if venv:
-            logger.debug(f"Found shared venv at {venv} for project {project_root}")
-            return venv
+        env = find_env_in_dir(current)
+        if env:
+            logger.debug(f"Found shared env at {env} for project {project_root}")
+            return env
         current = current.parent
 
     logger.debug(f"No venv found for project {project_root}")

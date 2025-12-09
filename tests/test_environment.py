@@ -9,11 +9,14 @@ from jons_mcp_pyright.environment import (
     EnvironmentState,
     discover_project_roots,
     resolve_venv_for_root,
+    resolve_pixi_env,
     discover_environments,
     get_environment_for_file,
     get_venv_patterns,
     read_pyright_config,
     DEFAULT_VENV_PATTERNS,
+    PIXI_ENV_VAR,
+    DEFAULT_PIXI_ENV,
 )
 
 
@@ -277,6 +280,123 @@ class TestResolveVenvForRoot:
         result = resolve_venv_for_root(tmp_path, patterns=[".custom-env"])
 
         assert result == tmp_path / ".custom-env"
+
+
+class TestPixiEnvironmentDetection:
+    """Tests for pixi environment detection."""
+
+    def _create_pixi_env(self, root: Path, env_name: str = "default") -> Path:
+        """Helper to create a mock pixi environment."""
+        pixi_env = root / ".pixi" / "envs" / env_name / "bin"
+        pixi_env.mkdir(parents=True)
+        (pixi_env / "python").write_text("")
+        return root / ".pixi" / "envs" / env_name
+
+    def test_detects_pixi_env_with_pixi_lock(self, tmp_path):
+        """Should detect pixi env when pixi.lock exists."""
+        (tmp_path / "pixi.lock").write_text("")
+        env_path = self._create_pixi_env(tmp_path)
+
+        result = resolve_pixi_env(tmp_path)
+
+        assert result == env_path
+
+    def test_detects_pixi_env_with_pixi_toml(self, tmp_path):
+        """Should detect pixi env when pixi.toml exists."""
+        (tmp_path / "pixi.toml").write_text("[project]\nname = 'test'")
+        env_path = self._create_pixi_env(tmp_path)
+
+        result = resolve_pixi_env(tmp_path)
+
+        assert result == env_path
+
+    def test_returns_none_without_pixi_markers(self, tmp_path):
+        """Should return None when no pixi.lock or pixi.toml exists."""
+        self._create_pixi_env(tmp_path)  # env exists but no marker files
+
+        result = resolve_pixi_env(tmp_path)
+
+        assert result is None
+
+    def test_returns_none_when_env_not_installed(self, tmp_path):
+        """Should return None when pixi project exists but env not installed."""
+        (tmp_path / "pixi.lock").write_text("")
+        # Don't create the .pixi/envs/default directory
+
+        result = resolve_pixi_env(tmp_path)
+
+        assert result is None
+
+    def test_pixi_env_override(self, tmp_path, monkeypatch):
+        """Should use PYRIGHT_PIXI_ENV to override default env name."""
+        (tmp_path / "pixi.lock").write_text("")
+        self._create_pixi_env(tmp_path, "default")  # default exists
+        custom_env = self._create_pixi_env(tmp_path, "dev")
+
+        monkeypatch.setenv(PIXI_ENV_VAR, "dev")
+
+        result = resolve_pixi_env(tmp_path)
+
+        assert result == custom_env
+
+    def test_pixi_takes_priority_over_venv(self, tmp_path):
+        """Should prefer pixi env over .venv in the same directory."""
+        # Create both pixi and venv in same directory
+        (tmp_path / "pixi.lock").write_text("")
+        pixi_env = self._create_pixi_env(tmp_path)
+
+        venv_dir = tmp_path / ".venv" / "bin"
+        venv_dir.mkdir(parents=True)
+        (venv_dir / "python").write_text("")
+
+        result = resolve_venv_for_root(tmp_path)
+
+        # Should pick pixi, not venv
+        assert result == pixi_env
+
+    def test_pixi_in_parent_takes_priority_over_venv_higher_up(self, tmp_path):
+        """Should prefer pixi env in parent over venv higher in tree."""
+        # Create venv at root
+        venv_dir = tmp_path / ".venv" / "bin"
+        venv_dir.mkdir(parents=True)
+        (venv_dir / "python").write_text("")
+
+        # Create pixi env in python/ subdirectory
+        python_dir = tmp_path / "python"
+        python_dir.mkdir()
+        (python_dir / "pixi.lock").write_text("")
+        pixi_env = self._create_pixi_env(python_dir)
+
+        # Create a project under python/
+        pkg_dir = python_dir / "common"
+        pkg_dir.mkdir()
+        (pkg_dir / "pyproject.toml").write_text("")
+
+        # Resolving for pkg_dir should find the pixi env, not the root venv
+        result = resolve_venv_for_root(pkg_dir)
+
+        assert result == pixi_env
+
+    def test_falls_back_to_venv_when_no_pixi(self, tmp_path):
+        """Should fall back to venv when pixi not present."""
+        venv_dir = tmp_path / ".venv" / "bin"
+        venv_dir.mkdir(parents=True)
+        (venv_dir / "python").write_text("")
+
+        result = resolve_venv_for_root(tmp_path)
+
+        assert result == tmp_path / ".venv"
+
+    def test_pixi_env_without_python(self, tmp_path):
+        """Should return None if pixi env dir exists but has no python."""
+        (tmp_path / "pixi.lock").write_text("")
+        pixi_env = tmp_path / ".pixi" / "envs" / "default"
+        pixi_env.mkdir(parents=True)
+        # No bin/python created
+
+        result = resolve_pixi_env(tmp_path)
+
+        assert result is None
 
 
 class TestDiscoverEnvironments:
