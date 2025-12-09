@@ -303,9 +303,6 @@ async def _get_methods_via_completion(
     # Check if there's already a dot after the token
     has_dot = token_end < len(current_line) and current_line[token_end] == "."
 
-    # Track document version - start at 2 (1 was didOpen)
-    doc_version = 2
-
     if has_dot:
         # Dot already exists, complete at position after dot
         dot_position = token_end + 1
@@ -319,6 +316,11 @@ async def _get_methods_via_completion(
         )
     else:
         # Need to insert a dot - use didChange to modify document temporarily
+        # Get manager for proper version tracking (only needed when modifying)
+        from ..server import get_manager
+
+        mgr = get_manager()
+
         # Insert "." after the token
         modified_line = current_line[:token_end] + "." + current_line[token_end:]
         modified_lines = lines_list.copy()
@@ -328,6 +330,9 @@ async def _get_methods_via_completion(
             f"type_info: inserting dot at {line}:{token_end}, completing at {line}:{token_end + 1}"
         )
 
+        # Use manager to properly increment version
+        doc_version = mgr.increment_doc_version(file_path, file_uri)
+
         # Send didChange with the modified content
         await client.notify(
             LSPMethods.DID_CHANGE,
@@ -336,7 +341,6 @@ async def _get_methods_via_completion(
                 "contentChanges": [{"text": "\n".join(modified_lines)}],
             },
         )
-        doc_version += 1
 
         # Complete at position after the inserted dot
         response = await client.request(
@@ -404,10 +408,12 @@ async def _get_methods_via_completion(
 
     # Restore original content if we modified it
     if not has_dot:
+        # Increment version again for the restoration
+        restore_version = mgr.increment_doc_version(file_path, file_uri)
         await client.notify(
             LSPMethods.DID_CHANGE,
             {
-                "textDocument": {"uri": file_uri, "version": doc_version},
+                "textDocument": {"uri": file_uri, "version": restore_version},
                 "contentChanges": [{"text": content}],
             },
         )

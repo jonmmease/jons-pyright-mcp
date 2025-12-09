@@ -379,13 +379,19 @@ class PyrightClientManager:
                 # Convert URI to path
                 file_path = uri.replace("file://", "")
 
+                # Get mtime before reading
+                mtime = os.stat(file_path).st_mtime_ns
+
                 # Read file content
                 with open(file_path, "r", encoding="utf-8") as f:
                     content = f.read()
 
+                # Normalize URI for consistent tracking
+                normalized_uri = self._normalize_uri(uri)
+
                 # Reset version for this file
-                version = env.doc_versions.get(uri, 0) + 1
-                env.doc_versions[uri] = version
+                version = env.doc_versions.get(normalized_uri, 0) + 1
+                env.doc_versions[normalized_uri] = version
 
                 # Send didOpen notification
                 await env.client.notify(
@@ -400,9 +406,10 @@ class PyrightClientManager:
                     },
                 )
 
-                # Track as opened
-                env.opened_files.add(uri)
-                logger.debug(f"Re-opened file: {uri}")
+                # Track as opened and store mtime
+                env.opened_files.add(normalized_uri)
+                env.file_mtimes[normalized_uri] = mtime
+                logger.debug(f"Re-opened file: {uri} (mtime={mtime})")
 
             except Exception as e:
                 logger.warning(f"Failed to re-open file {uri}: {e}")
@@ -582,3 +589,109 @@ class PyrightClientManager:
             env.doc_versions[normalized_uri] = current + 1
             return current + 1
         return 1
+
+    def get_file_mtime(self, file_path: str, uri: str) -> int | None:
+        """Get the cached modification time for a file.
+
+        Args:
+            file_path: Path to the file
+            uri: File URI
+
+        Returns:
+            Cached mtime in nanoseconds, or None if not tracked
+        """
+        env = self.get_environment_for_file(file_path)
+        if env:
+            normalized_uri = self._normalize_uri(uri)
+            return env.file_mtimes.get(normalized_uri)
+        return None
+
+    def set_file_mtime(self, file_path: str, uri: str, mtime: int) -> None:
+        """Set the cached modification time for a file.
+
+        Args:
+            file_path: Path to the file
+            uri: File URI
+            mtime: Modification time in nanoseconds (st_mtime_ns)
+        """
+        env = self.get_environment_for_file(file_path)
+        if env:
+            normalized_uri = self._normalize_uri(uri)
+            env.file_mtimes[normalized_uri] = mtime
+
+    def clear_file_mtime(self, file_path: str, uri: str) -> None:
+        """Clear the cached modification time for a file.
+
+        Args:
+            file_path: Path to the file
+            uri: File URI
+        """
+        env = self.get_environment_for_file(file_path)
+        if env:
+            normalized_uri = self._normalize_uri(uri)
+            env.file_mtimes.pop(normalized_uri, None)
+
+    def is_file_stale(self, file_path: str, uri: str) -> bool:
+        """Check if a file's cached content is stale.
+
+        Compares the current file modification time to the cached value.
+
+        Args:
+            file_path: Path to the file
+            uri: File URI
+
+        Returns:
+            True if the file has been modified since it was cached,
+            False if unchanged or if the file doesn't exist
+        """
+        cached_mtime = self.get_file_mtime(file_path, uri)
+        if cached_mtime is None:
+            # Not tracked yet, not considered stale (will be opened fresh)
+            return False
+
+        try:
+            current_mtime = os.stat(file_path).st_mtime_ns
+            return current_mtime != cached_mtime
+        except FileNotFoundError:
+            # File was deleted, handle gracefully
+            return False
+        except OSError as e:
+            logger.warning(f"Error checking mtime for {file_path}: {e}")
+            return False
+
+    def update_file_state(
+        self, file_path: str, uri: str, mtime: int | None = None
+    ) -> tuple[int, int | None]:
+        """Atomically update version and mtime for a file.
+
+        Args:
+            file_path: Path to the file
+            uri: File URI
+            mtime: Modification time in nanoseconds, or None to fetch current
+
+        Returns:
+            Tuple of (new_version, mtime) where mtime may be None on error
+        """
+        env = self.get_environment_for_file(file_path)
+        if not env:
+            return (1, None)
+
+        normalized_uri = self._normalize_uri(uri)
+
+        # Increment version
+        current_version = env.doc_versions.get(normalized_uri, 0)
+        new_version = current_version + 1
+        env.doc_versions[normalized_uri] = new_version
+
+        # Update mtime
+        if mtime is None:
+            try:
+                mtime = os.stat(file_path).st_mtime_ns
+            except OSError as e:
+                logger.warning(f"Error getting mtime for {file_path}: {e}")
+                mtime = None
+
+        if mtime is not None:
+            env.file_mtimes[normalized_uri] = mtime
+
+        return (new_version, mtime)

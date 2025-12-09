@@ -230,7 +230,11 @@ async def ensure_pyright_indexed(file_path: str | None = None) -> PyrightClient:
 async def ensure_file_open(
     client: PyrightClient, file_path: str, file_uri: str
 ) -> bool:
-    """Ensure file is open in pyright.
+    """Ensure file is open in pyright with fresh content.
+
+    Handles both initial file opening and stale file detection. If a file
+    has been modified externally since it was opened, sends a didChange
+    notification to update the LSP server.
 
     Args:
         client: The pyright client
@@ -238,41 +242,149 @@ async def ensure_file_open(
         file_uri: URI of the file
 
     Returns:
-        True if file is open, False if opening failed
+        True if file is open with current content, False if opening failed
     """
     mgr = get_manager()
 
     # Check if already opened in this environment
     if mgr.is_file_opened(file_path, file_uri):
+        # Check if file has been modified externally
+        if mgr.is_file_stale(file_path, file_uri):
+            logger.debug(f"Detected stale file: {file_path}")
+            try:
+                return await _refresh_stale_file(client, mgr, file_path, file_uri)
+            except FileNotFoundError:
+                # File was deleted - send didClose and clean up
+                logger.warning(f"File was deleted: {file_path}")
+                await _handle_deleted_file(client, mgr, file_path, file_uri)
+                return False
         return True
 
+    # File not yet opened - open it fresh
     try:
-        # Read file content
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        # Get document version
-        version = mgr.increment_doc_version(file_path, file_uri)
-
-        # Send didOpen notification
-        await client.notify(
-            "textDocument/didOpen",
-            {
-                "textDocument": {
-                    "uri": file_uri,
-                    "languageId": "python",
-                    "version": version,
-                    "text": content,
-                }
-            },
-        )
-
-        # Track the file as opened
-        mgr.mark_file_opened(file_path, file_uri, version)
-        return True
+        return await _open_file_fresh(client, mgr, file_path, file_uri)
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        return False
     except Exception as e:
         logger.error(f"Failed to open file {file_path}: {e}")
         return False
+
+
+async def _open_file_fresh(
+    client: PyrightClient,
+    mgr: PyrightClientManager,
+    file_path: str,
+    file_uri: str,
+) -> bool:
+    """Open a file for the first time.
+
+    Uses stat-read-stat pattern to handle race conditions.
+    """
+    # Stat-read-stat pattern to handle concurrent modifications
+    mtime_before = os.stat(file_path).st_mtime_ns
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    mtime_after = os.stat(file_path).st_mtime_ns
+
+    # Get document version
+    version = mgr.increment_doc_version(file_path, file_uri)
+
+    # Send didOpen notification
+    await client.notify(
+        "textDocument/didOpen",
+        {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": "python",
+                "version": version,
+                "text": content,
+            }
+        },
+    )
+
+    # Track the file as opened
+    mgr.mark_file_opened(file_path, file_uri, version)
+
+    # Only cache mtime if file didn't change during read
+    if mtime_before == mtime_after:
+        mgr.set_file_mtime(file_path, file_uri, mtime_after)
+    else:
+        # File changed during read - don't cache mtime to force recheck
+        logger.debug(f"File changed during read, not caching mtime: {file_path}")
+
+    return True
+
+
+async def _refresh_stale_file(
+    client: PyrightClient,
+    mgr: PyrightClientManager,
+    file_path: str,
+    file_uri: str,
+) -> bool:
+    """Refresh a stale file by sending didChange.
+
+    Uses stat-read-stat pattern to handle race conditions.
+    """
+    # Stat-read-stat pattern
+    mtime_before = os.stat(file_path).st_mtime_ns
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    mtime_after = os.stat(file_path).st_mtime_ns
+
+    # Increment version for the change
+    version = mgr.increment_doc_version(file_path, file_uri)
+
+    # Send full content change (simplest approach)
+    await client.notify(
+        "textDocument/didChange",
+        {
+            "textDocument": {
+                "uri": file_uri,
+                "version": version,
+            },
+            "contentChanges": [{"text": content}],
+        },
+    )
+
+    logger.debug(f"Refreshed stale file: {file_path} (version={version})")
+
+    # Only cache mtime if file didn't change during read
+    if mtime_before == mtime_after:
+        mgr.set_file_mtime(file_path, file_uri, mtime_after)
+    else:
+        # File changed during read - don't cache mtime to force recheck
+        logger.debug(f"File changed during refresh, not caching mtime: {file_path}")
+
+    return True
+
+
+async def _handle_deleted_file(
+    client: PyrightClient,
+    mgr: PyrightClientManager,
+    file_path: str,
+    file_uri: str,
+) -> None:
+    """Handle a file that was deleted after being opened."""
+    # Send didClose to clean up LSP state
+    await client.notify(
+        "textDocument/didClose",
+        {"textDocument": {"uri": file_uri}},
+    )
+
+    # Clean up our tracking
+    env = mgr.get_environment_for_file(file_path)
+    if env:
+        normalized_uri = mgr._normalize_uri(file_uri)
+        env.opened_files.discard(normalized_uri)
+        env.doc_versions.pop(normalized_uri, None)
+        env.file_mtimes.pop(normalized_uri, None)
+
+    logger.debug(f"Cleaned up deleted file: {file_path}")
 
 
 # Register all tools with the MCP server

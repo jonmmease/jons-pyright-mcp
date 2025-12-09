@@ -868,6 +868,13 @@ class TestGetMethodsViaCompletion:
             ]
         )
 
+        # Mock the manager for version tracking
+        mock_manager = MagicMock()
+        mock_manager.increment_doc_version.side_effect = [2, 3]  # First for insert, second for restore
+        monkeypatch.setattr(
+            "jons_mcp_pyright.server.manager", mock_manager
+        )
+
         methods = await _get_methods_via_completion(
             mock_client, file_uri, str(test_file), line=0, character=0
         )
@@ -876,6 +883,8 @@ class TestGetMethodsViaCompletion:
         assert methods[0]["name"] == "some_method"
         # Should have called notify twice (insert dot, restore original)
         assert mock_client.notify.call_count == 2
+        # Verify versions were incremented
+        assert mock_manager.increment_doc_version.call_count == 2
 
     @pytest.mark.asyncio
     async def test_empty_completion_results(self, tmp_path: Path, monkeypatch):

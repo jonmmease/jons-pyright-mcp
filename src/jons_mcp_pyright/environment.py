@@ -80,6 +80,9 @@ class EnvironmentState:
     doc_versions: dict[str, int] = field(default_factory=dict)
     """Document version counters per URI"""
 
+    file_mtimes: dict[str, int] = field(default_factory=dict)
+    """File modification times (nanoseconds) per URI for stale detection"""
+
     diagnostics: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     """Per-file diagnostics for this environment"""
 
@@ -91,9 +94,10 @@ class EnvironmentState:
         self.last_accessed = datetime.now()
 
     def clear_state(self) -> None:
-        """Clear runtime state (diagnostics, opened files, versions)."""
+        """Clear runtime state (diagnostics, opened files, versions, mtimes)."""
         self.opened_files.clear()
         self.doc_versions.clear()
+        self.file_mtimes.clear()
         self.diagnostics.clear()
 
 
