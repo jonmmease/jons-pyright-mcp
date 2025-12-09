@@ -71,7 +71,7 @@ src/jons_mcp_pyright/
 
 - **File URI handling**: `ensure_file_uri()` in `utils.py` converts paths to `file://` URIs, supporting both absolute and relative paths (relative to cwd)
 
-- **Pagination**: `apply_pagination()` provides consistent limit/offset handling across list-returning tools (`references`, `document_symbols`, `workspace_symbols`, `diagnostics`, `type_info`) with stable sorting
+- **Pagination**: `apply_pagination()` provides consistent limit/offset handling across list-returning tools (`references`, `document_symbols`, `diagnostics`, `type_info`) with stable sorting
 
 - **LSP message protocol**: Messages use JSON-RPC 2.0 with `Content-Length` headers over stdio
 
@@ -93,10 +93,9 @@ src/jons_mcp_pyright/
 - `LOG_LEVEL`: Set logging level (default: INFO)
 - Server can be launched with project path argument or uses current directory
 
-## MCP Tools (11 total)
+## MCP Tools (10 total)
 
 ### Navigation & Discovery
-- **workspace_symbols**: Search for types/functions across the project by name
 - **document_symbols**: List all symbols defined in a file
 - **definition**: Jump to where a symbol is defined
 - **type_definition**: Jump to the type definition of a symbol

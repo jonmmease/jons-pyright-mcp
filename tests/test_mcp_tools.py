@@ -22,7 +22,6 @@ from jons_mcp_pyright.tools import (
     symbol_info,
     type_definition,
     type_info,
-    workspace_symbols,
 )
 from jons_mcp_pyright.tools.language import _get_methods_via_completion
 
@@ -73,7 +72,6 @@ def setup_mock_manager(mock_client, tmp_path=None):
     mock_manager.get_all_diagnostics = MagicMock(return_value={})
     mock_manager.get_diagnostics_for_file = MagicMock(return_value=[])
     mock_manager.get_diagnostics_for_environment = MagicMock(return_value={})
-    # Return list of (env_id, client) tuples for workspace_symbols
     mock_manager.get_all_active_clients = MagicMock(
         return_value=[(str(project_root), mock_client)]
     )
@@ -345,94 +343,6 @@ class TestCoreLanguageFeatures:
         assert "Calculator" in names
         assert "__init__" in names
         assert "add" in names
-
-    @pytest.mark.asyncio
-    async def test_workspace_symbols(self, tmp_path: Path):
-        """Test workspace_symbols tool."""
-        mock_symbols = [
-            {"name": "Calculator", "location": {"uri": "file:///src/calc.py"}},
-            {"name": "compute", "location": {"uri": "file:///src/main.py"}},
-        ]
-
-        mock_client = create_mock_client()
-        mock_client.request = AsyncMock(return_value=mock_symbols)
-
-        setup_mock_manager(mock_client, tmp_path)
-
-        mock_ctx = AsyncMock()
-        result = await workspace_symbols(query="calc", ctx=mock_ctx)
-
-        # Result should be paginated response
-        assert "items" in result
-        assert "totalItems" in result
-        assert "offset" in result
-        assert "limit" in result
-        assert "hasMore" in result
-
-        # Check that the items have the expected symbols
-        assert len(result["items"]) == len(mock_symbols)
-        names = [item["name"] for item in result["items"]]
-        expected_names = [item["name"] for item in mock_symbols]
-        assert set(names) == set(expected_names)
-
-    @pytest.mark.asyncio
-    async def test_workspace_symbols_multi_env_requires_env_id(self, tmp_path: Path):
-        """Test workspace_symbols requires env_id when multiple environments exist."""
-        mock_client = create_mock_client()
-        mock_manager = setup_mock_manager(mock_client, tmp_path)
-
-        # Add a second environment to force env_id requirement
-        mock_env2 = MagicMock(spec=EnvironmentState)
-        mock_env2.env_id = "/other/project"
-        mock_env2.client = None
-        mock_manager.environments["/other/project"] = mock_env2
-
-        result = await workspace_symbols(query="test", ctx=None)
-
-        # Should return error with available environments
-        assert "error" in result
-        assert "Multiple environments exist" in result["error"]
-        assert "available_environments" in result
-        assert str(tmp_path) in result["available_environments"]
-        assert "/other/project" in result["available_environments"]
-
-    @pytest.mark.asyncio
-    async def test_workspace_symbols_invalid_env_id(self, tmp_path: Path):
-        """Test workspace_symbols with invalid env_id."""
-        mock_client = create_mock_client()
-        mock_manager = setup_mock_manager(mock_client, tmp_path)
-
-        # Add a second environment so validation kicks in
-        mock_env2 = MagicMock(spec=EnvironmentState)
-        mock_env2.env_id = "/other/project"
-        mock_env2.client = None
-        mock_manager.environments["/other/project"] = mock_env2
-
-        result = await workspace_symbols(query="test", env_id="/nonexistent", ctx=None)
-
-        # Should return error with available environments
-        assert "error" in result
-        assert "Unknown environment" in result["error"]
-        assert "available_environments" in result
-
-    @pytest.mark.asyncio
-    async def test_workspace_symbols_with_env_id(self, tmp_path: Path):
-        """Test workspace_symbols with explicit env_id."""
-        mock_symbols = [
-            {"name": "MyClass", "location": {"uri": "file:///src/test.py"}},
-        ]
-
-        mock_client = create_mock_client()
-        mock_client.request = AsyncMock(return_value=mock_symbols)
-        setup_mock_manager(mock_client, tmp_path)
-
-        result = await workspace_symbols(
-            query="My", env_id=str(tmp_path), ctx=None
-        )
-
-        assert "items" in result
-        assert len(result["items"]) == 1
-        assert result["items"][0]["name"] == "MyClass"
 
 
 class TestCodeIntelligence:

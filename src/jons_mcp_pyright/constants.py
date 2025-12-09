@@ -41,7 +41,6 @@ class LSPMethods:
     IMPLEMENTATION = "textDocument/implementation"
     REFERENCES = "textDocument/references"
     DOCUMENT_SYMBOL = "textDocument/documentSymbol"
-    WORKSPACE_SYMBOL = "workspace/symbol"
 
     # Code intelligence
     CODE_ACTION = "textDocument/codeAction"

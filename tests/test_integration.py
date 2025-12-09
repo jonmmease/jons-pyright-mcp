@@ -20,7 +20,6 @@ from jons_mcp_pyright.tools import (
     symbol_info,
     type_definition,
     type_info,
-    workspace_symbols,
 )
 from jons_mcp_pyright.tools.extensions import list_environments, restart_server
 
@@ -268,27 +267,6 @@ calc: Calculator = Calculator(10)
             assert "uri" in item
 
     @pytest.mark.asyncio
-    async def test_workspace_symbols(
-        self, pyright_manager: PyrightClientManager, temp_python_project: Path
-    ):
-        """Test workspace_symbols search."""
-        # Search for Calculator
-        result = await workspace_symbols(query="Calculator", ctx=None)
-
-        assert "items" in result
-        # Should find Calculator class
-        if result["totalItems"] > 0:
-            names = [s["name"] for s in result["items"]]
-            assert "Calculator" in names
-
-        # Search for greet function
-        result2 = await workspace_symbols(query="greet", ctx=None)
-        assert "items" in result2
-        if result2["totalItems"] > 0:
-            names = [s["name"] for s in result2["items"]]
-            assert "greet" in names
-
-    @pytest.mark.asyncio
     async def test_diagnostics_with_error(
         self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
@@ -444,36 +422,6 @@ class TestMultiEnvironment:
         assert "ClassB" in names_b
 
     @pytest.mark.asyncio
-    async def test_workspace_symbols_requires_env_id(
-        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
-    ):
-        """Test workspace_symbols requires env_id when multiple environments exist."""
-        # Without env_id, should return error listing available environments
-        result = await workspace_symbols(query="Class", ctx=None)
-
-        assert "error" in result
-        assert "Multiple environments exist" in result["error"]
-        assert "available_environments" in result
-        assert len(result["available_environments"]) == 3  # root, pkg-a, pkg-b
-
-    @pytest.mark.asyncio
-    async def test_workspace_symbols_with_env_id(
-        self, multi_env_manager: PyrightClientManager, multi_env_project: Path
-    ):
-        """Test workspace_symbols works with explicit env_id."""
-        pkg_a_path = str(multi_env_project / "packages" / "pkg-a")
-
-        # Search for "Class" in pkg-a environment
-        result = await workspace_symbols(query="Class", env_id=pkg_a_path, ctx=None)
-
-        assert "items" in result
-        assert "error" not in result
-        # Should find ClassA from pkg-a
-        if result["totalItems"] > 0:
-            names = [s["name"] for s in result["items"]]
-            assert "ClassA" in names
-
-    @pytest.mark.asyncio
     async def test_restart_environment_by_file(
         self, multi_env_manager: PyrightClientManager, multi_env_project: Path
     ):
@@ -521,9 +469,6 @@ class TestMultiEnvironment:
         assert "contents" in result
 
         result = await document_symbols(file_path=str(main_file), ctx=None)
-        assert "items" in result
-
-        result = await workspace_symbols(query="greet", ctx=None)
         assert "items" in result
 
 

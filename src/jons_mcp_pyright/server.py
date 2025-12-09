@@ -31,7 +31,6 @@ from .tools import (
     symbol_info,
     type_definition,
     type_info,
-    workspace_symbols,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,7 +120,6 @@ MCP server providing Pyright LSP features for Python code intelligence.
 ## Navigation & Discovery
 | Tool | Purpose |
 |------|---------|
-| workspace_symbols | Search for types/functions across the project by name |
 | document_symbols | List all symbols defined in a file |
 | definition | Jump to where a symbol is defined |
 | type_definition | Jump to the type definition of a symbol |
@@ -151,15 +149,14 @@ MCP server providing Pyright LSP features for Python code intelligence.
 | restart_server | Restart Pyright after config changes |
 
 ## Typical Workflow
-1. Use workspace_symbols or document_symbols to find code
+1. Use document_symbols to find code in a file
 2. Call type_info on a variable to discover its type, fields, and methods
 3. Use definition to navigate to source, references to find usages
 4. Check diagnostics after making changes
 
 ## Pagination
-Tools returning lists (references, document_symbols, workspace_symbols, diagnostics,
-type_info methods) return max 20 items. Use limit/offset parameters and check
-hasMore for additional results.
+Tools returning lists (references, document_symbols, diagnostics, type_info methods)
+return max 20 items. Use limit/offset parameters and check hasMore for additional results.
 """,
 )
 
@@ -286,7 +283,6 @@ mcp.tool(type_definition)
 mcp.tool(implementation)
 mcp.tool(references)
 mcp.tool(document_symbols)
-mcp.tool(workspace_symbols)
 mcp.tool(diagnostics)
 mcp.tool(rename)
 mcp.tool(list_environments)

@@ -10,7 +10,6 @@ from .language import (
     symbol_info,
     type_definition,
     type_info,
-    workspace_symbols,
 )
 
 __all__ = [
@@ -22,7 +21,6 @@ __all__ = [
     "implementation",
     "references",
     "document_symbols",
-    "workspace_symbols",
     # Intelligence tools
     "diagnostics",
     "rename",

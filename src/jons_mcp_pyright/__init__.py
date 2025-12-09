@@ -41,7 +41,6 @@ from .tools import (
     symbol_info,
     type_definition,
     type_info,
-    workspace_symbols,
 )
 from .utils import apply_pagination, ensure_file_uri
 
@@ -80,7 +79,6 @@ __all__ = [
     "implementation",
     "references",
     "document_symbols",
-    "workspace_symbols",
     "diagnostics",
     "rename",
     "restart_server",

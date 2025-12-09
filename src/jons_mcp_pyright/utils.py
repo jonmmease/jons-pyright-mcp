@@ -113,18 +113,6 @@ def symbol_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
     return (line, char, name)
 
 
-def workspace_symbol_sort_key(item: dict[str, Any]) -> tuple[str, str, int]:
-    """Sort key for workspace symbols.
-
-    Sorts by name, then by URI, then by line.
-    """
-    name = item.get("name", "")
-    location = item.get("location", {})
-    uri = location.get("uri", "")
-    line = location.get("range", {}).get("start", {}).get("line", 0)
-    return (name, uri, line)
-
-
 def diagnostic_sort_key(item: dict[str, Any]) -> tuple[int, str, int, int]:
     """Sort key for diagnostics.
 
