@@ -23,6 +23,7 @@ from .environment import (
     get_environment_for_file,
     read_pyright_config,
 )
+from .constants import DIAGNOSTIC_WAIT_TIMEOUT
 from .lsp_client import PyrightClient, get_python_interpreter
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,9 @@ class PyrightClientManager:
 
         # Track active clients count
         self._active_count = 0
+
+        # Diagnostic waiters: URI -> list of asyncio.Event for pending diagnostic waits
+        self._diagnostic_waiters: dict[str, list[asyncio.Event]] = {}
 
         logger.info(
             f"PyrightClientManager initialized with {len(self.environments)} environment(s), "
@@ -232,6 +236,11 @@ class PyrightClientManager:
         diagnostics = params.get("diagnostics", [])
         env.diagnostics[uri] = diagnostics
         logger.debug(f"Received {len(diagnostics)} diagnostics for {uri} in {env.env_id}")
+
+        # Signal any waiters for this URI
+        waiters = self._diagnostic_waiters.pop(uri, [])
+        for event in waiters:
+            event.set()
 
         # Forward to external handler if set
         if self.notification_handler:
@@ -493,6 +502,61 @@ class PyrightClientManager:
             raise ValueError(f"Environment not found: {env_id}")
 
         return dict(env.diagnostics)
+
+    def register_diagnostic_waiter(self, uri: str) -> asyncio.Event:
+        """Register a waiter for diagnostics on a specific URI.
+
+        Must be called BEFORE the change that triggers diagnostics to prevent
+        a race condition where diagnostics arrive before the waiter is set up.
+
+        Args:
+            uri: The file URI to wait for diagnostics on
+
+        Returns:
+            An asyncio.Event that will be set when diagnostics arrive
+        """
+        event = asyncio.Event()
+        self._diagnostic_waiters.setdefault(uri, []).append(event)
+        return event
+
+    async def wait_for_diagnostics(
+        self, events: list[asyncio.Event], timeout: float = DIAGNOSTIC_WAIT_TIMEOUT
+    ) -> bool:
+        """Wait for all diagnostic events to fire.
+
+        Args:
+            events: List of events from register_diagnostic_waiter
+            timeout: Maximum wait time in seconds
+
+        Returns:
+            True if all events fired, False if timeout occurred
+        """
+        if not events:
+            return True
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(e.wait() for e in events)),
+                timeout=timeout,
+            )
+            return True
+        except asyncio.TimeoutError:
+            logger.debug(f"Timed out waiting for diagnostics ({timeout}s)")
+            self._cleanup_waiters(events)
+            return False
+
+    def _cleanup_waiters(self, events_to_remove: list[asyncio.Event]) -> None:
+        """Remove specific events from the waiters dict after timeout.
+
+        Args:
+            events_to_remove: Events to clean up (unfired after timeout)
+        """
+        event_ids = set(id(e) for e in events_to_remove)
+        for uri in list(self._diagnostic_waiters):
+            self._diagnostic_waiters[uri] = [
+                e for e in self._diagnostic_waiters[uri] if id(e) not in event_ids
+            ]
+            if not self._diagnostic_waiters[uri]:
+                del self._diagnostic_waiters[uri]
 
     def get_opened_files(self, env_id: str) -> set[str]:
         """Get the set of opened files for an environment.

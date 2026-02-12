@@ -2,6 +2,7 @@
 Unit tests for MCP tools exposed by pyright-mcp.
 """
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -76,6 +77,11 @@ def setup_mock_manager(mock_client, tmp_path=None):
         return_value=[(str(project_root), mock_client)]
     )
     mock_manager._start_client = AsyncMock()
+    mock_manager.is_file_stale = MagicMock(return_value=False)
+    mock_manager.register_diagnostic_waiter = MagicMock(return_value=asyncio.Event())
+    mock_manager.wait_for_diagnostics = AsyncMock(return_value=True)
+    mock_manager.get_environment = MagicMock(return_value=mock_env)
+    mock_manager.get_all_environments = MagicMock(return_value=[mock_env])
 
     server_module.manager = mock_manager
     server_module.initialization_complete = True
@@ -974,3 +980,245 @@ class TestGetMethodsViaCompletion:
         assert len(methods) == 1
         assert methods[0]["name"] == "process"
         assert methods[0]["detail"] == "(self, data: bytes, count: int) -> bool"
+
+
+class TestDiagnosticWaiter:
+    """Test the diagnostic waiter mechanism on PyrightClientManager."""
+
+    def _make_manager(self, tmp_path: Path) -> PyrightClientManager:
+        """Create a real PyrightClientManager for testing waiter methods."""
+        mgr = PyrightClientManager.__new__(PyrightClientManager)
+        mgr.root = tmp_path
+        mgr.max_active_clients = 1
+        mgr.notification_handler = None
+        mgr.environments = {}
+        mgr._active_count = 0
+        mgr._diagnostic_waiters = {}
+        return mgr
+
+    def test_register_and_signal_waiter(self, tmp_path: Path):
+        """Test that registering a waiter and signaling it via _handle_diagnostics works."""
+        mgr = self._make_manager(tmp_path)
+        uri = "file:///test.py"
+
+        event = mgr.register_diagnostic_waiter(uri)
+        assert not event.is_set()
+        assert uri in mgr._diagnostic_waiters
+        assert len(mgr._diagnostic_waiters[uri]) == 1
+
+        # Simulate diagnostics arriving
+        env = MagicMock(spec=EnvironmentState)
+        env.diagnostics = {}
+        env.env_id = "test-env"
+        mgr._handle_diagnostics(env, {"uri": uri, "diagnostics": []})
+
+        assert event.is_set()
+        # Waiter should be popped after signaling
+        assert uri not in mgr._diagnostic_waiters
+
+    @pytest.mark.asyncio
+    async def test_wait_for_diagnostics_success(self, tmp_path: Path):
+        """Test wait_for_diagnostics returns True when events are set."""
+        mgr = self._make_manager(tmp_path)
+        event = asyncio.Event()
+        event.set()
+
+        result = await mgr.wait_for_diagnostics([event], timeout=0.1)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_wait_for_diagnostics_timeout(self, tmp_path: Path):
+        """Test wait_for_diagnostics returns False on timeout and cleans up."""
+        mgr = self._make_manager(tmp_path)
+        uri = "file:///test.py"
+        event = mgr.register_diagnostic_waiter(uri)
+
+        result = await mgr.wait_for_diagnostics([event], timeout=0.05)
+        assert result is False
+        # Event should be cleaned up
+        assert uri not in mgr._diagnostic_waiters
+
+    @pytest.mark.asyncio
+    async def test_wait_for_diagnostics_no_events(self, tmp_path: Path):
+        """Test wait_for_diagnostics with empty list returns True immediately."""
+        mgr = self._make_manager(tmp_path)
+        result = await mgr.wait_for_diagnostics([], timeout=0.1)
+        assert result is True
+
+    def test_multiple_waiters_same_uri(self, tmp_path: Path):
+        """Test multiple waiters on same URI both get signaled."""
+        mgr = self._make_manager(tmp_path)
+        uri = "file:///test.py"
+
+        event1 = mgr.register_diagnostic_waiter(uri)
+        event2 = mgr.register_diagnostic_waiter(uri)
+        assert len(mgr._diagnostic_waiters[uri]) == 2
+
+        # Signal via diagnostics
+        env = MagicMock(spec=EnvironmentState)
+        env.diagnostics = {}
+        env.env_id = "test-env"
+        mgr._handle_diagnostics(env, {"uri": uri, "diagnostics": []})
+
+        assert event1.is_set()
+        assert event2.is_set()
+        assert uri not in mgr._diagnostic_waiters
+
+    def test_cleanup_removes_only_specified_events(self, tmp_path: Path):
+        """Test _cleanup_waiters removes only the specified events."""
+        mgr = self._make_manager(tmp_path)
+        uri = "file:///test.py"
+
+        event1 = mgr.register_diagnostic_waiter(uri)
+        event2 = mgr.register_diagnostic_waiter(uri)
+
+        # Only clean up event1
+        mgr._cleanup_waiters([event1])
+
+        assert uri in mgr._diagnostic_waiters
+        assert len(mgr._diagnostic_waiters[uri]) == 1
+        assert mgr._diagnostic_waiters[uri][0] is event2
+
+    def test_cleanup_deletes_empty_uri_entries(self, tmp_path: Path):
+        """Test _cleanup_waiters removes URI key when list becomes empty."""
+        mgr = self._make_manager(tmp_path)
+        uri = "file:///test.py"
+
+        event = mgr.register_diagnostic_waiter(uri)
+        mgr._cleanup_waiters([event])
+
+        assert uri not in mgr._diagnostic_waiters
+
+
+class TestDiagnosticsWaiterIntegration:
+    """Test the diagnostics tool correctly uses the waiter mechanism."""
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_waits_on_new_file(self, tmp_path: Path):
+        """When file is not yet opened, diagnostics should register waiter and wait."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # File not yet opened
+        mock_manager.is_file_opened = MagicMock(return_value=False)
+        mock_manager.get_diagnostics_for_file = MagicMock(
+            return_value=[{"severity": 1, "message": "Error 1"}]
+        )
+
+        result = await diagnostics(file_path="/test.py")
+
+        mock_manager.register_diagnostic_waiter.assert_called_once()
+        mock_manager.wait_for_diagnostics.assert_called_once()
+        assert len(result["items"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_waits_on_stale_file(self, tmp_path: Path):
+        """When file is opened but stale, diagnostics should register waiter and wait."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("x = 1\n")
+
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # File opened but stale
+        mock_manager.is_file_opened = MagicMock(return_value=True)
+        mock_manager.is_file_stale = MagicMock(return_value=True)
+        mock_manager.get_diagnostics_for_file = MagicMock(
+            return_value=[{"severity": 1, "message": "Error 1"}]
+        )
+
+        result = await diagnostics(file_path=str(test_file))
+
+        mock_manager.register_diagnostic_waiter.assert_called_once()
+        mock_manager.wait_for_diagnostics.assert_called_once()
+        assert len(result["items"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_no_wait_when_current(self, tmp_path: Path):
+        """When file is opened and fresh, no waiter should be registered."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # File opened and current
+        mock_manager.is_file_opened = MagicMock(return_value=True)
+        mock_manager.is_file_stale = MagicMock(return_value=False)
+        mock_manager.get_diagnostics_for_file = MagicMock(
+            return_value=[{"severity": 1, "message": "Error 1"}]
+        )
+
+        result = await diagnostics(file_path="/test.py")
+
+        mock_manager.register_diagnostic_waiter.assert_not_called()
+        mock_manager.wait_for_diagnostics.assert_not_called()
+        assert len(result["items"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_timeout_returns_cached(self, tmp_path: Path):
+        """When waiter times out, cached diagnostics should still be returned."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # File not opened (needs refresh)
+        mock_manager.is_file_opened = MagicMock(return_value=False)
+        # Timeout
+        mock_manager.wait_for_diagnostics = AsyncMock(return_value=False)
+        mock_manager.get_diagnostics_for_file = MagicMock(
+            return_value=[{"severity": 2, "message": "Cached warning"}]
+        )
+
+        result = await diagnostics(file_path="/test.py")
+
+        mock_manager.register_diagnostic_waiter.assert_called_once()
+        mock_manager.wait_for_diagnostics.assert_called_once()
+        # Should still return cached diagnostics
+        assert len(result["items"]) == 1
+        assert result["items"][0]["message"] == "Cached warning"
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_env_mode_refreshes_stale(self, tmp_path: Path):
+        """env_id mode should refresh stale files before returning."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # Set up environment with opened files
+        mock_env = mock_manager.get_environment.return_value
+        mock_env.client = mock_client
+        mock_env.opened_files = {"file:///a.py", "file:///b.py"}
+
+        # a.py is stale, b.py is not
+        def is_stale(fp, uri):
+            return uri == "file:///a.py"
+
+        mock_manager.is_file_stale = MagicMock(side_effect=is_stale)
+        mock_manager.get_diagnostics_for_environment = MagicMock(
+            return_value={"file:///a.py": [{"severity": 1, "message": "E1"}]}
+        )
+
+        result = await diagnostics(env_id=str(tmp_path))
+
+        # Should register waiter only for a.py (stale), not b.py
+        mock_manager.register_diagnostic_waiter.assert_called_once_with("file:///a.py")
+        mock_manager.wait_for_diagnostics.assert_called_once()
+        assert len(result["items"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_aggregate_refreshes_stale(self, tmp_path: Path):
+        """Aggregate mode should refresh stale files across all environments."""
+        mock_client = create_mock_client()
+        mock_manager = setup_mock_manager(mock_client, tmp_path)
+
+        # Set up environment with opened files
+        mock_env = mock_manager.get_all_environments.return_value[0]
+        mock_env.client = mock_client
+        mock_env.opened_files = {"file:///a.py"}
+
+        mock_manager.is_file_stale = MagicMock(return_value=True)
+        mock_manager.get_all_diagnostics = MagicMock(
+            return_value={"file:///a.py": [{"severity": 1, "message": "E1"}]}
+        )
+
+        result = await diagnostics()
+
+        mock_manager.register_diagnostic_waiter.assert_called_once_with("file:///a.py")
+        mock_manager.wait_for_diagnostics.assert_called_once()
+        assert len(result["items"]) == 1

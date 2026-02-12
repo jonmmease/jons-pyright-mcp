@@ -5,6 +5,7 @@ import os
 # Timeouts
 REQUEST_TIMEOUT: float = float(os.environ.get("PYRIGHT_TIMEOUT", "60.0"))
 SHUTDOWN_TIMEOUT: float = 5.0
+DIAGNOSTIC_WAIT_TIMEOUT: float = float(os.environ.get("PYRIGHT_DIAG_TIMEOUT", "5.0"))
 
 # Buffer sizes
 READ_BUFFER_SIZE: int = 4096
