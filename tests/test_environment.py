@@ -1,22 +1,19 @@
 """Tests for environment discovery and management."""
 
-import os
-from pathlib import Path
 from datetime import datetime
-import pytest
+from pathlib import Path
 
 from jons_mcp_pyright.environment import (
+    DEFAULT_VENV_PATTERNS,
+    PIXI_ENV_VAR,
     EnvironmentState,
-    discover_project_roots,
-    resolve_venv_for_root,
-    resolve_pixi_env,
     discover_environments,
+    discover_project_roots,
     get_environment_for_file,
     get_venv_patterns,
     read_pyright_config,
-    DEFAULT_VENV_PATTERNS,
-    PIXI_ENV_VAR,
-    DEFAULT_PIXI_ENV,
+    resolve_pixi_env,
+    resolve_venv_for_root,
 )
 
 

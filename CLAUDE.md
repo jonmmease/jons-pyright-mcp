@@ -1,116 +1,78 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository.
 
-## Project Overview
+## Overview
 
-A FastMCP server that exposes Pyright LSP features through the Model Context Protocol (MCP). It manages Pyright as a subprocess and translates between MCP and LSP protocols, enabling AI assistants to interact with Python code using Pyright's language intelligence.
+`jons-mcp-pyright` is a FastMCP stdio server that exposes Pyright LSP features
+as MCP tools. It manages one or more Pyright subprocesses, routes files to
+discovered Python project roots, keeps opened documents synced with disk, and
+rejects file inputs outside the configured project root before any LSP or
+filesystem side effect.
 
-## Build and Development Commands
+## Commands
 
 ```bash
-# Install dependencies
-uv pip install -e .
-
-# Install with dev dependencies
-uv pip install -e ".[dev]"
-
-# Run the server
-uv run jons-mcp-pyright
-
-# Run all tests
+uv sync --extra dev
+uv run jons-mcp-pyright /path/to/python/project
 uv run pytest
-
-# Run a single test file
-uv run pytest tests/test_lsp_client.py
-
-# Run a single test
-uv run pytest tests/test_lsp_client.py::test_name
-
-# Run integration tests (requires pyright installed)
-uv run pytest tests/test_integration.py -m integration
-
-# Type check
-uv run mypy src/jons_mcp_pyright
-
-# Format code
-uv run black src tests
-
-# Lint code
-uv run ruff check src tests
+uv run pytest --cov=src/jons_mcp_pyright --cov-report=term-missing
+uv run ruff check .
+uv run mypy src
+uv build --wheel --out-dir /tmp/jons-mcp-pyright-wheel
 ```
+
+Run a focused test:
+
+```bash
+uv run pytest tests/test_mcp_tools.py::TestCoreLanguageFeatures::test_symbol_info
+```
+
+## Package And Entry Point
+
+- Package name: `jons-mcp-pyright`
+- Import package: `jons_mcp_pyright`
+- Console command: `jons-mcp-pyright`
+- Source layout: packages are discovered under `src/`; do not reintroduce a
+  packaged top-level `src` module.
+
+The project is not published on PyPI. Documentation should use GitHub/local
+install examples, not `pip install` or `uv add` package-name instructions.
 
 ## Architecture
 
-### Package Structure
-
-```
+```text
 src/jons_mcp_pyright/
-├── __init__.py          # Package exports
-├── constants.py         # Magic numbers, timeouts, LSP method constants
-├── exceptions.py        # Custom exception classes
-├── utils.py             # Pagination, file URI helpers, sort keys
-├── lsp_client.py        # PyrightClient - LSP subprocess management
-├── server.py            # FastMCP server setup, lifespan, main()
+├── constants.py
+├── environment.py      # project-root and environment discovery
+├── exceptions.py
+├── lsp_client.py       # Pyright subprocess and JSON-RPC/LSP framing
+├── manager.py          # multi-environment routing, diagnostics, restarts
+├── server.py           # FastMCP server, lifespan, path resolver entrypoint
+├── utils.py            # path validation, file URIs, pagination, response helpers
 └── tools/
-    ├── __init__.py      # Re-exports all tools
-    ├── language.py      # symbol_info, type_info, definition, references, etc.
-    ├── intelligence.py  # diagnostics, rename
-    └── extensions.py    # restart_server
+    ├── extensions.py
+    ├── intelligence.py
+    └── language.py
 ```
 
-### Core Components
+## Safety Rules
 
-- **`lsp_client.py`**: `PyrightClient` - Thread-based LSP client that manages Pyright subprocess, handles LSP message framing (Content-Length headers), and maintains pending request futures
+- Resolve every user-supplied file path through the project-root resolver.
+- Relative paths are relative to the configured project root, not process cwd.
+- Reject outside-root absolute paths, outside-root `file://` URIs, `..` escapes,
+  symlink escapes, missing files, and directories before Pyright is touched.
+- LSP-returned external locations may be returned to the caller, but do not open
+  or read external files for enrichment.
+- Keep stdout protocol-clean; logs and startup errors go to stderr.
+- `rename` returns a workspace edit only; it must not write files.
 
-- **`server.py`**: FastMCP server with lifespan context manager for Pyright lifecycle. Contains global `pyright` client and `current_diagnostics` dict storing published diagnostics per file URI
+## Public Tools
 
-- **`tools/`**: MCP tool functions organized by domain. Each tool validates context, translates MCP requests to LSP, and formats responses
+`symbol_info`, `type_info`, `definition`, `type_definition`, `implementation`,
+`references`, `document_symbols`, `diagnostics`, `rename`, `list_environments`,
+and `restart_server`.
 
-### Key Patterns
-
-- **File URI handling**: `ensure_file_uri()` in `utils.py` converts paths to `file://` URIs, supporting both absolute and relative paths (relative to cwd)
-
-- **Pagination**: `apply_pagination()` provides consistent limit/offset handling across list-returning tools (`references`, `document_symbols`, `diagnostics`, `type_info`) with stable sorting
-
-- **LSP message protocol**: Messages use JSON-RPC 2.0 with `Content-Length` headers over stdio
-
-- **Context validation**: All tools accept `ctx: Context | None = None` and validate Pyright is initialized before proceeding
-
-- **Custom exceptions**: `LSPRequestError`, `PyrightNotInitializedError`, `PyrightNotFoundError` provide specific error handling
-
-- **Thread-based I/O**: Unlike rust-analyzer client, Pyright client uses threads for reading stdout/stderr to handle blocking I/O
-
-### Test Structure
-
-- `tests/test_lsp_client.py`: Unit tests for the LSP client message parsing/sending
-- `tests/test_mcp_tools.py`: Unit tests for MCP tool wrappers with mocked pyright
-- `tests/test_integration.py`: Integration tests requiring real pyright process (marked with `@pytest.mark.integration`)
-
-## Configuration
-
-- Server reads `pyrightconfig.json` from project root if present
-- `LOG_LEVEL`: Set logging level (default: INFO)
-- Server can be launched with project path argument or uses current directory
-
-## MCP Tools (10 total)
-
-### Navigation & Discovery
-- **document_symbols**: List all symbols defined in a file
-- **definition**: Jump to where a symbol is defined
-- **type_definition**: Jump to the type definition of a symbol
-- **implementation**: Find implementations of protocols/abstract classes
-- **references**: Find all usages of a symbol
-
-### Understanding Code
-- **type_info**: Get type name, fields, and methods for a value (primary tool)
-- **symbol_info**: Get type signature and docs for any symbol (via hover)
-
-### Code Intelligence
-- **diagnostics**: Get type errors and warnings
-
-### Refactoring
-- **rename**: Safely rename a symbol across the project
-
-### Server Management
-- **restart_server**: Restart Pyright after config changes
+Navigation tools return `items` and `totalItems`. Paginated tools return
+`items`, `totalItems`, `offset`, `limit`, `hasMore`, and `nextOffset`. Errors
+use `error.code`, `error.message`, and `error.retryable`.

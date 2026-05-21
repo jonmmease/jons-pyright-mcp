@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from .lsp_client import PyrightClient
@@ -169,10 +169,10 @@ def read_pyright_config(project_root: Path) -> dict[str, Any]:
     config_path = project_root / "pyrightconfig.json"
     if config_path.exists():
         try:
-            with open(config_path, "r") as f:
+            with open(config_path) as f:
                 config = json.load(f)
                 logger.debug(f"Loaded pyrightconfig.json from {project_root}: {config}")
-                return config
+                return cast(dict[str, Any], config)
         except Exception as e:
             logger.warning(f"Failed to read pyrightconfig.json at {config_path}: {e}")
     return {}

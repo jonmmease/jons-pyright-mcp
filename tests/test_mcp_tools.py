@@ -4,14 +4,14 @@ Unit tests for MCP tools exposed by pyright-mcp.
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from jons_mcp_pyright import ensure_file_uri, ensure_pyright
 from jons_mcp_pyright import server as server_module
-from jons_mcp_pyright.manager import PyrightClientManager
 from jons_mcp_pyright.environment import EnvironmentState
+from jons_mcp_pyright.manager import PyrightClientManager
 from jons_mcp_pyright.tools import (
     definition,
     diagnostics,
@@ -48,6 +48,10 @@ def setup_mock_manager(mock_client, tmp_path=None):
         The mock manager
     """
     project_root = tmp_path if tmp_path else Path("/test/project")
+    project_root.mkdir(parents=True, exist_ok=True)
+    default_file = project_root / "test.py"
+    if not default_file.exists():
+        default_file.write_text("# test\n")
     mock_client.project_root = project_root
 
     # Create a mock environment state
@@ -63,6 +67,7 @@ def setup_mock_manager(mock_client, tmp_path=None):
 
     # Create a mock manager
     mock_manager = MagicMock(spec=PyrightClientManager)
+    mock_manager.root = project_root
     mock_manager.root_environment = mock_env
     mock_manager.environments = {str(project_root): mock_env}
     mock_manager.get_environment_for_file = MagicMock(return_value=mock_env)
@@ -129,6 +134,85 @@ class TestCoreLanguageFeatures:
     """Test core language feature tools."""
 
     @pytest.mark.asyncio
+    async def test_relative_paths_resolve_from_project_root(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Relative tool paths should ignore the MCP process cwd."""
+        project_root = tmp_path / "project"
+        other_cwd = tmp_path / "other"
+        project_root.mkdir()
+        other_cwd.mkdir()
+        test_file = project_root / "test.py"
+        test_file.write_text("# project file\n")
+        (other_cwd / "test.py").write_text("# wrong file\n")
+        monkeypatch.chdir(other_cwd)
+
+        mock_client = create_mock_client()
+        mock_client.request = AsyncMock(return_value={"contents": "ok"})
+        setup_mock_manager(mock_client, project_root)
+
+        result = await symbol_info(file_path="test.py", line=0, character=0)
+
+        assert result == {"contents": "ok"}
+        mock_client.request.assert_called_once_with(
+            "textDocument/hover",
+            {
+                "textDocument": {"uri": test_file.resolve().as_uri()},
+                "position": {"line": 0, "character": 0},
+            },
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool_call",
+        [
+            lambda path: symbol_info(path, 0, 0),
+            lambda path: type_info(path, 0, 0),
+            lambda path: definition(path, 0, 0),
+            lambda path: type_definition(path, 0, 0),
+            lambda path: implementation(path, 0, 0),
+            lambda path: references(path, 0, 0),
+            lambda path: document_symbols(path),
+            lambda path: diagnostics(file_path=path),
+            lambda path: rename(path, 0, 0, "new_name"),
+            lambda path: restart_server(file_path=path),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "path_case",
+        ["relative_escape", "absolute_outside", "file_uri_outside", "symlink_escape", "missing", "directory"],
+    )
+    async def test_file_tools_reject_unsafe_paths(
+        self, tmp_path: Path, tool_call, path_case: str
+    ):
+        """Every file-taking public tool validates paths before LSP/filesystem work."""
+        root = tmp_path / "project"
+        root.mkdir()
+        outside = tmp_path / "outside.py"
+        outside.write_text("x = 1\n")
+        (root / "test.py").write_text("x = 1\n")
+        symlink = root / "linked.py"
+        symlink.symlink_to(outside)
+
+        paths = {
+            "relative_escape": "../outside.py",
+            "absolute_outside": str(outside),
+            "file_uri_outside": outside.resolve().as_uri(),
+            "symlink_escape": str(symlink),
+            "missing": str(root / "missing.py"),
+            "directory": str(root),
+        }
+
+        mock_client = create_mock_client()
+        setup_mock_manager(mock_client, root)
+
+        result = await tool_call(paths[path_case])
+
+        assert result["error"]["code"] == "path_validation_error"
+        mock_client.request.assert_not_called()
+        mock_client.notify.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_symbol_info(self, tmp_path: Path, monkeypatch):
         """Test symbol_info tool."""
         monkeypatch.chdir(tmp_path)
@@ -187,9 +271,8 @@ class TestCoreLanguageFeatures:
             file_path="test.py", line=10, character=5, ctx=mock_ctx
         )
 
-        assert result == {
-            "error": "Pyright is still initializing. Please try again in a few seconds."
-        }
+        assert result["error"]["code"] == "pyright_initializing"
+        assert result["error"]["retryable"] is True
 
     @pytest.mark.asyncio
     async def test_definition(self, tmp_path: Path):
@@ -212,7 +295,7 @@ class TestCoreLanguageFeatures:
             file_path="test.py", line=10, character=5, ctx=mock_ctx
         )
 
-        assert result == mock_location
+        assert result == {"items": [mock_location], "totalItems": 1}
 
     @pytest.mark.asyncio
     async def test_type_definition(self, tmp_path: Path, monkeypatch):
@@ -239,7 +322,7 @@ class TestCoreLanguageFeatures:
             file_path="test.py", line=10, character=5, ctx=mock_ctx
         )
 
-        assert result == mock_location
+        assert result == {"items": [mock_location], "totalItems": 1}
 
     @pytest.mark.asyncio
     async def test_implementation(self, tmp_path: Path, monkeypatch):
@@ -265,10 +348,8 @@ class TestCoreLanguageFeatures:
             file_path="test.py", line=5, character=4, ctx=mock_ctx
         )
 
-        # implementation returns raw result, not paginated
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert result[0]["uri"] == "file:///test.py"
+        assert result["totalItems"] == 1
+        assert result["items"][0]["uri"] == "file:///test.py"
 
     @pytest.mark.asyncio
     async def test_references(self, tmp_path: Path, monkeypatch):
@@ -388,7 +469,9 @@ class TestCodeIntelligence:
             return_value=[{"severity": 1, "message": "Error 1"}]
         )
 
-        result = await diagnostics(file_path="/test1.py")
+        test_file = tmp_path / "test1.py"
+        test_file.write_text("# test\n")
+        result = await diagnostics(file_path=str(test_file))
 
         # Result should be paginated response for single file diagnostics
         assert "items" in result
@@ -429,7 +512,7 @@ class TestCodeIntelligence:
             ctx=mock_ctx,
         )
 
-        assert result == mock_edit
+        assert result == {"workspaceEdit": mock_edit}
 
     @pytest.mark.asyncio
     async def test_rename_not_allowed(self, tmp_path: Path):
@@ -448,7 +531,8 @@ class TestCodeIntelligence:
             ctx=mock_ctx,
         )
 
-        assert result == {"error": "Cannot rename at this position"}
+        assert result["error"]["code"] == "rename_not_available"
+        assert result["error"]["message"] == "Cannot rename at this position"
 
 
 class TestPyrightExtensions:
@@ -466,7 +550,7 @@ class TestPyrightExtensions:
         mock_ctx = AsyncMock()
         result = await restart_server(ctx=mock_ctx)
 
-        assert result == "all pyright servers restarted successfully"
+        assert result == {"status": "restarted", "scope": "all"}
         mock_manager.restart_all.assert_called_once()
 
     @pytest.mark.asyncio
@@ -481,7 +565,9 @@ class TestPyrightExtensions:
         mock_ctx = AsyncMock()
         result = await restart_server(file_path="test.py", ctx=mock_ctx)
 
-        assert "pyright server restarted for environment containing" in result
+        assert result["status"] == "restarted"
+        assert result["scope"] == "environment"
+        assert result["env_id"] == str(tmp_path)
         # restart_environment is called with the env_id (project root), not the file path
         mock_manager.restart_environment.assert_called_once_with(str(tmp_path))
 
@@ -497,7 +583,11 @@ class TestPyrightExtensions:
         mock_ctx = AsyncMock()
         result = await restart_server(env_id=str(tmp_path), ctx=mock_ctx)
 
-        assert f"pyright server restarted for environment: {tmp_path}" in result
+        assert result == {
+            "status": "restarted",
+            "scope": "environment",
+            "env_id": str(tmp_path),
+        }
         mock_manager.restart_environment.assert_called_once_with(str(tmp_path))
 
     @pytest.mark.asyncio
@@ -514,7 +604,8 @@ class TestPyrightExtensions:
         mock_ctx = AsyncMock()
         result = await restart_server(env_id="/nonexistent", ctx=mock_ctx)
 
-        assert "Error:" in result
+        assert result["status"] == "error"
+        assert "No environment found" in result["message"]
 
     @pytest.mark.asyncio
     async def test_restart_server_not_running(self):
@@ -537,7 +628,7 @@ class TestListEnvironments:
         from jons_mcp_pyright.tools.extensions import list_environments
 
         mock_client = create_mock_client()
-        mock_manager = setup_mock_manager(mock_client, tmp_path)
+        setup_mock_manager(mock_client, tmp_path)
 
         result = await list_environments()
 
@@ -625,6 +716,7 @@ obj = MyClass()
 
         mock_client.request = AsyncMock(
             side_effect=[
+                {"contents": {"kind": "markdown", "value": "obj: MyClass"}},  # hover
                 type_def_response,  # typeDefinition
                 doc_symbols_response,  # documentSymbol
                 hover_value,  # hover for value field
@@ -675,8 +767,8 @@ obj = MyClass()
 
         mock_client.request = AsyncMock(
             side_effect=[
-                type_def_response,  # typeDefinition (None)
                 hover_response,  # hover fallback
+                type_def_response,  # typeDefinition (None)
                 completion_response,  # completion
                 {"label": "bit_length", "kind": 2, "detail": "(self) -> int"},
                 {"label": "to_bytes", "kind": 2, "detail": "(self, ...) -> bytes"},
@@ -719,7 +811,8 @@ obj = MyClass()
         )
 
         assert "error" in result
-        assert "Could not determine type" in result["error"]
+        assert result["error"]["code"] == "type_not_found"
+        assert "Could not determine type" in result["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_type_info_pagination(self, tmp_path: Path, monkeypatch):
@@ -735,15 +828,15 @@ obj = MyClass()
 
         # Many methods for list type
         methods = [
-            {"label": f"method{i}", "kind": 2, "detail": f"(self) -> int"}
+            {"label": f"method{i}", "kind": 2, "detail": "(self) -> int"}
             for i in range(25)
         ]
         completion_response = {"items": methods}
 
         # Build side effects with resolve responses
         side_effects = [
-            None,  # typeDefinition
             hover_response,  # hover
+            None,  # typeDefinition
             completion_response,  # completion
         ]
         # Add resolve responses for each method
@@ -795,8 +888,8 @@ obj = MyClass()
 
         mock_client.request = AsyncMock(
             side_effect=[
-                None,  # typeDefinition
                 hover_response,  # hover
+                None,  # typeDefinition
                 completion_response,  # completion
                 resolve_response,  # resolve with documentation
             ]
@@ -1105,7 +1198,7 @@ class TestDiagnosticsWaiterIntegration:
             return_value=[{"severity": 1, "message": "Error 1"}]
         )
 
-        result = await diagnostics(file_path="/test.py")
+        result = await diagnostics(file_path=str(tmp_path / "test.py"))
 
         mock_manager.register_diagnostic_waiter.assert_called_once()
         mock_manager.wait_for_diagnostics.assert_called_once()
@@ -1146,7 +1239,7 @@ class TestDiagnosticsWaiterIntegration:
             return_value=[{"severity": 1, "message": "Error 1"}]
         )
 
-        result = await diagnostics(file_path="/test.py")
+        result = await diagnostics(file_path=str(tmp_path / "test.py"))
 
         mock_manager.register_diagnostic_waiter.assert_not_called()
         mock_manager.wait_for_diagnostics.assert_not_called()
@@ -1166,7 +1259,7 @@ class TestDiagnosticsWaiterIntegration:
             return_value=[{"severity": 2, "message": "Cached warning"}]
         )
 
-        result = await diagnostics(file_path="/test.py")
+        result = await diagnostics(file_path=str(tmp_path / "test.py"))
 
         mock_manager.register_diagnostic_waiter.assert_called_once()
         mock_manager.wait_for_diagnostics.assert_called_once()
@@ -1183,21 +1276,27 @@ class TestDiagnosticsWaiterIntegration:
         # Set up environment with opened files
         mock_env = mock_manager.get_environment.return_value
         mock_env.client = mock_client
-        mock_env.opened_files = {"file:///a.py", "file:///b.py"}
+        file_a = tmp_path / "a.py"
+        file_b = tmp_path / "b.py"
+        file_a.write_text("a = 1\n")
+        file_b.write_text("b = 1\n")
+        uri_a = file_a.resolve().as_uri()
+        uri_b = file_b.resolve().as_uri()
+        mock_env.opened_files = {uri_a, uri_b}
 
         # a.py is stale, b.py is not
         def is_stale(fp, uri):
-            return uri == "file:///a.py"
+            return uri == uri_a
 
         mock_manager.is_file_stale = MagicMock(side_effect=is_stale)
         mock_manager.get_diagnostics_for_environment = MagicMock(
-            return_value={"file:///a.py": [{"severity": 1, "message": "E1"}]}
+            return_value={uri_a: [{"severity": 1, "message": "E1"}]}
         )
 
         result = await diagnostics(env_id=str(tmp_path))
 
         # Should register waiter only for a.py (stale), not b.py
-        mock_manager.register_diagnostic_waiter.assert_called_once_with("file:///a.py")
+        mock_manager.register_diagnostic_waiter.assert_called_once_with(uri_a)
         mock_manager.wait_for_diagnostics.assert_called_once()
         assert len(result["items"]) == 1
 
@@ -1210,15 +1309,18 @@ class TestDiagnosticsWaiterIntegration:
         # Set up environment with opened files
         mock_env = mock_manager.get_all_environments.return_value[0]
         mock_env.client = mock_client
-        mock_env.opened_files = {"file:///a.py"}
+        file_a = tmp_path / "a.py"
+        file_a.write_text("a = 1\n")
+        uri_a = file_a.resolve().as_uri()
+        mock_env.opened_files = {uri_a}
 
         mock_manager.is_file_stale = MagicMock(return_value=True)
         mock_manager.get_all_diagnostics = MagicMock(
-            return_value={"file:///a.py": [{"severity": 1, "message": "E1"}]}
+            return_value={uri_a: [{"severity": 1, "message": "E1"}]}
         )
 
         result = await diagnostics()
 
-        mock_manager.register_diagnostic_waiter.assert_called_once_with("file:///a.py")
+        mock_manager.register_diagnostic_waiter.assert_called_once_with(uri_a)
         mock_manager.wait_for_diagnostics.assert_called_once()
         assert len(result["items"]) == 1

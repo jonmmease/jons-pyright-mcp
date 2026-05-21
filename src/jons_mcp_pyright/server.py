@@ -10,9 +10,10 @@ import logging
 import os
 import signal
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastmcp import FastMCP
 
@@ -32,6 +33,7 @@ from .tools import (
     type_definition,
     type_info,
 )
+from .utils import ResolvedFilePath, resolve_project_file
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stderr,
 )
 
 # Global manager instance (replaces single pyright client)
@@ -172,6 +175,23 @@ def get_manager() -> PyrightClientManager:
     return manager
 
 
+def get_project_root() -> Path:
+    """Return the configured project root used for user file paths."""
+    if manager:
+        root = getattr(manager, "root", None)
+        if root is not None:
+            return Path(root).resolve()
+        root_env = getattr(manager, "root_environment", None)
+        if root_env is not None:
+            return Path(root_env.project_root).resolve()
+    return (_project_root or Path.cwd()).resolve()
+
+
+def resolve_file_for_tool(file_path: str) -> ResolvedFilePath:
+    """Resolve and validate a tool file path inside the project root."""
+    return resolve_project_file(file_path, get_project_root())
+
+
 def ensure_pyright() -> PyrightClient:
     """Ensure pyright is initialized and return the root client.
 
@@ -197,7 +217,7 @@ def ensure_pyright() -> PyrightClient:
     return root_env.client
 
 
-async def ensure_pyright_indexed(file_path: str | None = None) -> PyrightClient:
+async def ensure_pyright_indexed(file_path: str | Path | None = None) -> PyrightClient:
     """Ensure pyright is initialized and return the appropriate client.
 
     If file_path is provided, returns the client for that file's environment.
@@ -213,7 +233,7 @@ async def ensure_pyright_indexed(file_path: str | None = None) -> PyrightClient:
 
     if file_path:
         # Route to the correct environment for this file
-        client = await mgr.get_client_for_file(file_path)
+        client = await mgr.get_client_for_file(str(file_path))
         if not client.is_initialized():
             if initialization_complete:
                 raise PyrightNotInitializedError(
@@ -228,7 +248,7 @@ async def ensure_pyright_indexed(file_path: str | None = None) -> PyrightClient:
 
 
 async def ensure_file_open(
-    client: PyrightClient, file_path: str, file_uri: str
+    client: PyrightClient, file_path: str | Path, file_uri: str
 ) -> bool:
     """Ensure file is open in pyright with fresh content.
 
@@ -245,6 +265,7 @@ async def ensure_file_open(
         True if file is open with current content, False if opening failed
     """
     mgr = get_manager()
+    file_path = str(file_path)
 
     # Check if already opened in this environment
     if mgr.is_file_opened(file_path, file_uri):
@@ -284,7 +305,7 @@ async def _open_file_fresh(
     # Stat-read-stat pattern to handle concurrent modifications
     mtime_before = os.stat(file_path).st_mtime_ns
 
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         content = f.read()
 
     mtime_after = os.stat(file_path).st_mtime_ns
@@ -331,7 +352,7 @@ async def _refresh_stale_file(
     # Stat-read-stat pattern
     mtime_before = os.stat(file_path).st_mtime_ns
 
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         content = f.read()
 
     mtime_after = os.stat(file_path).st_mtime_ns
@@ -431,7 +452,7 @@ def main() -> None:
     # Set project root from CLI argument
     if args.project_path:
         _project_root = Path(args.project_path).resolve()
-        if not _project_root.exists():
+        if not _project_root.exists() or not _project_root.is_dir():
             print(f"Error: Project path does not exist: {_project_root}", file=sys.stderr)
             sys.exit(1)
 

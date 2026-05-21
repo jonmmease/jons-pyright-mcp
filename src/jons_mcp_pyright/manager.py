@@ -13,18 +13,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+from .constants import DIAGNOSTIC_WAIT_TIMEOUT
 from .environment import (
     EnvironmentState,
     discover_environments,
     get_environment_for_file,
     read_pyright_config,
 )
-from .constants import DIAGNOSTIC_WAIT_TIMEOUT
-from .lsp_client import PyrightClient, get_python_interpreter
+from .lsp_client import PyrightClient
+from .utils import file_uri_to_path, is_path_within_root
 
 logger = logging.getLogger(__name__)
 
@@ -151,14 +153,7 @@ class PyrightClientManager:
         env = self.get_environment_for_file(resolved_path)
 
         if not env:
-            # Fall back to root environment
-            env = self.root_environment
-            if not env:
-                raise ValueError(
-                    f"No environment found for file: {file_path} "
-                    f"and no root environment available"
-                )
-            logger.debug(f"Using root environment for file: {file_path}")
+            raise ValueError(f"File is outside the configured project root: {file_path}")
 
         # Update access time
         env.update_access_time()
@@ -328,6 +323,7 @@ class PyrightClientManager:
     async def shutdown_all(self) -> None:
         """Shutdown all active clients."""
         logger.info("Shutting down all clients...")
+        self._diagnostic_waiters.clear()
 
         shutdown_tasks = []
         for env in self.environments.values():
@@ -354,6 +350,7 @@ class PyrightClientManager:
 
         # Store files that were open (as URIs)
         previously_opened_uris = set(env.opened_files)
+        self._diagnostic_waiters.clear()
 
         # Shutdown existing client
         if env.client:
@@ -386,13 +383,17 @@ class PyrightClientManager:
         for uri in uris:
             try:
                 # Convert URI to path
-                file_path = uri.replace("file://", "")
+                file_path_obj = file_uri_to_path(uri).resolve()
+                if not is_path_within_root(file_path_obj, env.project_root):
+                    logger.warning("Skipping out-of-root document during reopen: %s", uri)
+                    continue
+                file_path = str(file_path_obj)
 
                 # Get mtime before reading
                 mtime = os.stat(file_path).st_mtime_ns
 
                 # Read file content
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(file_path, encoding="utf-8") as f:
                     content = f.read()
 
                 # Normalize URI for consistent tracking
@@ -425,10 +426,13 @@ class PyrightClientManager:
 
     async def restart_all(self) -> None:
         """Restart all environments (re-discover and restart active clients)."""
-        # Get list of active env IDs
-        active_env_ids = [
-            env.env_id for env in self.environments.values() if env.client
-        ]
+        # Preserve active environments and opened documents before shutdown clears state.
+        active_state = {
+            env.env_id: set(env.opened_files)
+            for env in self.environments.values()
+            if env.client
+        }
+        self._diagnostic_waiters.clear()
 
         # Shutdown all
         await self.shutdown_all()
@@ -436,11 +440,12 @@ class PyrightClientManager:
         # Re-discover environments
         self.rediscover_environments()
 
-        # Restart previously active clients
-        for env_id in active_env_ids:
+        # Restart previously active clients and restore their live documents.
+        for env_id, opened_uris in active_state.items():
             env = self.environments.get(env_id)
             if env:
                 await self._start_client(env)
+                await self._reopen_files(env, opened_uris)
 
         logger.info("Restarted all environments")
 
@@ -718,7 +723,7 @@ class PyrightClientManager:
             return current_mtime != cached_mtime
         except FileNotFoundError:
             # File was deleted, handle gracefully
-            return False
+            return True
         except OSError as e:
             logger.warning(f"Error checking mtime for {file_path}: {e}")
             return False

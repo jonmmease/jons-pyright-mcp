@@ -5,6 +5,9 @@ from typing import Any
 
 from fastmcp import Context
 
+from ..exceptions import PathValidationError
+from ..utils import exception_to_tool_error
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +26,7 @@ async def list_environments(
 
     Use this to understand which environments are available and their status.
     """
-    from ..server import get_manager
+    from ..server import get_manager, get_project_root
 
     mgr = get_manager()
 
@@ -43,6 +46,7 @@ async def list_environments(
     return {
         "total": len(environments),
         "active_count": sum(1 for e in environments if e["is_active"]),
+        "project_root": str(get_project_root()),
         "environments": environments,
     }
 
@@ -51,7 +55,7 @@ async def restart_server(
     file_path: str | None = None,
     env_id: str | None = None,
     ctx: Context | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Restart the pyright language server.
 
     Use this after modifying pyrightconfig.json or when pyright seems stuck.
@@ -66,19 +70,31 @@ async def restart_server(
 
     Returns status message.
     """
-    from ..server import get_manager
+    from ..server import get_manager, resolve_file_for_tool
 
     mgr = get_manager()
 
     if file_path:
         # Mode 1: Restart environment for specific file
+        try:
+            resolved = resolve_file_for_tool(file_path)
+        except PathValidationError as e:
+            return exception_to_tool_error(e)
         if ctx:
-            await ctx.info(f"Restarting pyright server for {file_path}...")
-        env = mgr.get_environment_for_file(file_path)
+            await ctx.info(f"Restarting pyright server for {resolved.display_path}...")
+        env = mgr.get_environment_for_file(str(resolved.path))
         if not env:
-            return f"No environment found for file: {file_path}"
+            return {
+                "status": "error",
+                "message": f"No environment found for file: {resolved.display_path}",
+            }
         await mgr.restart_environment(env.env_id)
-        return f"pyright server restarted for environment containing {file_path}"
+        return {
+            "status": "restarted",
+            "scope": "environment",
+            "env_id": env.env_id,
+            "file": resolved.uri,
+        }
 
     elif env_id:
         # Mode 2: Restart specific environment by ID
@@ -86,13 +102,13 @@ async def restart_server(
             await ctx.info(f"Restarting pyright server for environment {env_id}...")
         try:
             await mgr.restart_environment(env_id)
-            return f"pyright server restarted for environment: {env_id}"
+            return {"status": "restarted", "scope": "environment", "env_id": env_id}
         except ValueError as e:
-            return f"Error: {e}"
+            return {"status": "error", "message": str(e)}
 
     else:
         # Mode 3: Restart all environments and re-discover
         if ctx:
             await ctx.info("Restarting all pyright servers...")
         await mgr.restart_all()
-        return "all pyright servers restarted successfully"
+        return {"status": "restarted", "scope": "all"}

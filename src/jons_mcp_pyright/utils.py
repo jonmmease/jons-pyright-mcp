@@ -1,18 +1,111 @@
 """Utility functions for the Pyright MCP server."""
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import unquote, urlparse
 
 from .constants import DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET
+from .exceptions import LSPRequestError, PathValidationError
 
 T = TypeVar("T")
 
 
-def ensure_file_uri(file_path: str) -> str:
+@dataclass(frozen=True)
+class ResolvedFilePath:
+    """A user file path resolved inside the configured project root."""
+
+    path: Path
+    uri: str
+    project_root: Path
+
+    @property
+    def display_path(self) -> str:
+        """Return a project-relative display path when possible."""
+        try:
+            return str(self.path.relative_to(self.project_root))
+        except ValueError:
+            return str(self.path)
+
+
+def path_to_file_uri(path: Path) -> str:
+    """Convert a local path to a normalized file URI."""
+    return path.resolve().as_uri()
+
+
+def file_uri_to_path(uri: str) -> Path:
+    """Convert a local file URI to a path.
+
+    Raises:
+        PathValidationError: If the URI is not a local file URI.
+    """
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        raise PathValidationError(f"Expected a file:// URI, got: {uri}")
+    if parsed.netloc not in ("", "localhost"):
+        raise PathValidationError(f"Only local file:// URIs are supported: {uri}")
+    if not parsed.path:
+        raise PathValidationError(f"File URI is missing a path: {uri}")
+    return Path(unquote(parsed.path))
+
+
+def is_path_within_root(path: Path, project_root: Path) -> bool:
+    """Return True when path resolves within project_root."""
+    try:
+        path.resolve().relative_to(project_root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def resolve_project_file(
+    file_path: str,
+    project_root: Path,
+    *,
+    must_exist: bool = True,
+    require_file: bool = True,
+) -> ResolvedFilePath:
+    """Resolve a user supplied path inside the configured project root.
+
+    Accepts relative paths, absolute paths, and local file:// URIs. Relative paths
+    are resolved from project_root, not the MCP process cwd.
+    """
+    raw_path = file_path.strip()
+    if not raw_path:
+        raise PathValidationError("file_path is required")
+
+    root = project_root.resolve()
+    path = file_uri_to_path(raw_path) if raw_path.startswith("file://") else Path(raw_path)
+    if not path.is_absolute():
+        path = root / path
+
+    try:
+        resolved = path.resolve(strict=must_exist)
+    except FileNotFoundError as exc:
+        raise PathValidationError(f"File not found: {file_path}") from exc
+    except OSError as exc:
+        raise PathValidationError(f"Unable to resolve file path: {file_path}") from exc
+
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise PathValidationError(
+            f"Path is outside the configured project root: {file_path}"
+        ) from exc
+
+    if must_exist and require_file and not resolved.is_file():
+        raise PathValidationError(f"Path is not a file: {file_path}")
+
+    return ResolvedFilePath(path=resolved, uri=path_to_file_uri(resolved), project_root=root)
+
+
+def ensure_file_uri(file_path: str, project_root: Path | None = None) -> str:
     """Convert file path to proper file URI.
 
     Args:
         file_path: Path to the file (absolute, relative, or already a URI)
+        project_root: Root used for relative paths. Defaults to process cwd for
+            backward compatibility. Runtime tools pass the configured project root.
 
     Returns:
         Properly formatted file:// URI
@@ -22,9 +115,49 @@ def ensure_file_uri(file_path: str) -> str:
 
     path = Path(file_path)
     if not path.is_absolute():
-        path = Path.cwd() / path
+        path = (project_root or Path.cwd()) / path
 
-    return f"file://{path.absolute()}"
+    return path_to_file_uri(path)
+
+
+def tool_error(
+    code: str,
+    message: str,
+    *,
+    retryable: bool = False,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Return a consistent MCP tool error payload."""
+    payload: dict[str, Any] = {
+        "error": {
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+        }
+    }
+    payload.update(extra)
+    return payload
+
+
+def exception_to_tool_error(exc: Exception) -> dict[str, Any]:
+    """Convert a known exception to the public tool error shape."""
+    if isinstance(exc, PathValidationError):
+        return tool_error(exc.code, str(exc))
+    if isinstance(exc, LSPRequestError):
+        code = "lsp_timeout" if exc.is_retryable else "lsp_error"
+        return tool_error(code, exc.message, retryable=exc.is_retryable)
+    return tool_error(type(exc).__name__, str(exc))
+
+
+def locations_to_items(response: Any) -> list[dict[str, Any]]:
+    """Normalize LSP Location/LocationLink responses to a list."""
+    if not response:
+        return []
+    if isinstance(response, list):
+        return [item for item in response if isinstance(item, dict)]
+    if isinstance(response, dict):
+        return [response]
+    return []
 
 
 def apply_pagination(
@@ -44,6 +177,8 @@ def apply_pagination(
     Returns:
         Tuple of (paginated_items, metadata_dict)
     """
+    offset = max(DEFAULT_PAGINATION_OFFSET, offset)
+    limit = max(1, limit)
     total_items = len(items)
     start_idx = min(offset, total_items)
     end_idx = min(start_idx + limit, total_items)

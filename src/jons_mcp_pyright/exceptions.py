@@ -42,6 +42,12 @@ class PyrightNotFoundError(Exception):
     pass
 
 
+class PathValidationError(ValueError):
+    """Raised when a user-supplied path is outside the project boundary."""
+
+    code = "path_validation_error"
+
+
 @dataclass
 class Position:
     """LSP position in a text document."""

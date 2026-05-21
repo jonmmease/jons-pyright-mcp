@@ -6,14 +6,49 @@ from typing import Any
 from fastmcp import Context
 
 from ..constants import DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET, LSPMethods
-from ..exceptions import LSPRequestError, PyrightNotInitializedError
-from ..utils import (
-    apply_pagination,
-    ensure_file_uri,
-    flatten_document_symbols,
-    location_sort_key,
-    symbol_sort_key,
+from ..exceptions import (
+    LSPRequestError,
+    PathValidationError,
+    PyrightNotInitializedError,
 )
+from ..utils import (
+    ResolvedFilePath,
+    apply_pagination,
+    exception_to_tool_error,
+    file_uri_to_path,
+    flatten_document_symbols,
+    is_path_within_root,
+    location_sort_key,
+    locations_to_items,
+    symbol_sort_key,
+    tool_error,
+)
+
+
+async def _resolve_client_and_file(file_path: str) -> tuple[Any, ResolvedFilePath]:
+    """Validate a tool path and return its routed Pyright client."""
+    from ..server import ensure_pyright_indexed, resolve_file_for_tool
+
+    resolved = resolve_file_for_tool(file_path)
+    client = await ensure_pyright_indexed(resolved.path)
+    return client, resolved
+
+
+def _not_initialized_error(exc: PyrightNotInitializedError) -> dict[str, Any]:
+    """Return a consistent initialization error response."""
+    if "still initializing" in str(exc):
+        return tool_error(
+            "pyright_initializing",
+            "Pyright is still initializing. Please try again in a few seconds.",
+            retryable=True,
+        )
+    return tool_error("pyright_not_initialized", str(exc), retryable=True)
+
+
+def _navigation_result(response: Any) -> dict[str, Any]:
+    """Normalize navigation responses to the public tool shape."""
+    items = locations_to_items(response)
+    return {"items": items, "totalItems": len(items)}
 
 
 async def symbol_info(
@@ -27,39 +62,33 @@ async def symbol_info(
     Returns {contents} with type info and docs.
     Use this to get full details for any symbol, field, or method.
     """
-    from ..server import ensure_file_open, ensure_pyright_indexed
+    from ..server import ensure_file_open
 
     try:
-        client = await ensure_pyright_indexed(file_path)
+        client, resolved = await _resolve_client_and_file(file_path)
     except PyrightNotInitializedError as e:
-        if "still initializing" in str(e):
-            return {
-                "error": "Pyright is still initializing. Please try again in a few seconds."
-            }
-        return {"error": f"Pyright error: {e}"}
-
-    file_uri = ensure_file_uri(file_path)
+        return _not_initialized_error(e)
+    except (PathValidationError, ValueError) as e:
+        return exception_to_tool_error(e)
 
     if ctx:
-        await ctx.info(f"Getting symbol info at {file_path}:{line}:{character}")
+        await ctx.info(
+            f"Getting symbol info at {resolved.display_path}:{line}:{character}"
+        )
 
     # Ensure file is open
-    await ensure_file_open(client, file_path, file_uri)
+    await ensure_file_open(client, resolved.path, resolved.uri)
 
     try:
         response = await client.request(
             LSPMethods.HOVER,
             {
-                "textDocument": {"uri": file_uri},
+                "textDocument": {"uri": resolved.uri},
                 "position": {"line": line, "character": character},
             },
         )
     except LSPRequestError as e:
-        if "timed out" in str(e):
-            return {
-                "error": "Request timed out. The file might be too large or pyright is still analyzing. Please try again."
-            }
-        return {"error": f"LSP error: {e}"}
+        return exception_to_tool_error(e)
 
     if not response:
         return {"contents": "No symbol information available"}
@@ -72,32 +101,39 @@ async def definition(
     line: int,
     character: int,
     ctx: Context | None = None,
-) -> dict[str, Any] | list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Go to definition of symbol at position (0-indexed).
 
     Returns location(s) where the symbol is defined: {uri, range}.
     Use this to jump from a variable/function usage to its declaration.
     """
-    from ..server import ensure_file_open, ensure_pyright_indexed
+    from ..server import ensure_file_open
 
-    client = await ensure_pyright_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
+    try:
+        client, resolved = await _resolve_client_and_file(file_path)
+    except PyrightNotInitializedError as e:
+        return _not_initialized_error(e)
+    except (PathValidationError, ValueError) as e:
+        return exception_to_tool_error(e)
 
     if ctx:
-        await ctx.info(f"Finding definition at {file_path}:{line}:{character}")
+        await ctx.info(f"Finding definition at {resolved.display_path}:{line}:{character}")
 
     # Ensure file is open
-    await ensure_file_open(client, file_path, file_uri)
+    await ensure_file_open(client, resolved.path, resolved.uri)
 
-    response = await client.request(
-        LSPMethods.DEFINITION,
-        {
-            "textDocument": {"uri": file_uri},
-            "position": {"line": line, "character": character},
-        },
-    )
+    try:
+        response = await client.request(
+            LSPMethods.DEFINITION,
+            {
+                "textDocument": {"uri": resolved.uri},
+                "position": {"line": line, "character": character},
+            },
+        )
+    except LSPRequestError as e:
+        return exception_to_tool_error(e)
 
-    return response or {"message": "No definition found"}
+    return _navigation_result(response)
 
 
 async def type_definition(
@@ -105,32 +141,41 @@ async def type_definition(
     line: int,
     character: int,
     ctx: Context | None = None,
-) -> dict[str, Any] | list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Go to type definition of symbol at position (0-indexed).
 
     Returns location(s) of the type definition: {uri, range}.
     Use this to navigate from a variable to its type's declaration.
     """
-    from ..server import ensure_file_open, ensure_pyright_indexed
+    from ..server import ensure_file_open
 
-    client = await ensure_pyright_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
+    try:
+        client, resolved = await _resolve_client_and_file(file_path)
+    except PyrightNotInitializedError as e:
+        return _not_initialized_error(e)
+    except (PathValidationError, ValueError) as e:
+        return exception_to_tool_error(e)
 
     if ctx:
-        await ctx.info(f"Finding type definition at {file_path}:{line}:{character}")
+        await ctx.info(
+            f"Finding type definition at {resolved.display_path}:{line}:{character}"
+        )
 
     # Ensure file is open
-    await ensure_file_open(client, file_path, file_uri)
+    await ensure_file_open(client, resolved.path, resolved.uri)
 
-    response = await client.request(
-        LSPMethods.TYPE_DEFINITION,
-        {
-            "textDocument": {"uri": file_uri},
-            "position": {"line": line, "character": character},
-        },
-    )
+    try:
+        response = await client.request(
+            LSPMethods.TYPE_DEFINITION,
+            {
+                "textDocument": {"uri": resolved.uri},
+                "position": {"line": line, "character": character},
+            },
+        )
+    except LSPRequestError as e:
+        return exception_to_tool_error(e)
 
-    return response or {"message": "No type definition found"}
+    return _navigation_result(response)
 
 
 async def implementation(
@@ -138,32 +183,41 @@ async def implementation(
     line: int,
     character: int,
     ctx: Context | None = None,
-) -> dict[str, Any] | list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Find implementations of class/protocol at position (0-indexed).
 
     Returns location(s) of implementations: {uri, range}.
     Call on a Protocol to find all classes implementing it.
     """
-    from ..server import ensure_file_open, ensure_pyright_indexed
+    from ..server import ensure_file_open
 
-    client = await ensure_pyright_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
+    try:
+        client, resolved = await _resolve_client_and_file(file_path)
+    except PyrightNotInitializedError as e:
+        return _not_initialized_error(e)
+    except (PathValidationError, ValueError) as e:
+        return exception_to_tool_error(e)
 
     if ctx:
-        await ctx.info(f"Finding implementations at {file_path}:{line}:{character}")
+        await ctx.info(
+            f"Finding implementations at {resolved.display_path}:{line}:{character}"
+        )
 
     # Ensure file is open
-    await ensure_file_open(client, file_path, file_uri)
+    await ensure_file_open(client, resolved.path, resolved.uri)
 
-    response = await client.request(
-        LSPMethods.IMPLEMENTATION,
-        {
-            "textDocument": {"uri": file_uri},
-            "position": {"line": line, "character": character},
-        },
-    )
+    try:
+        response = await client.request(
+            LSPMethods.IMPLEMENTATION,
+            {
+                "textDocument": {"uri": resolved.uri},
+                "position": {"line": line, "character": character},
+            },
+        )
+    except LSPRequestError as e:
+        return exception_to_tool_error(e)
 
-    return response or {"message": "No implementations found"}
+    return _navigation_result(response)
 
 
 async def references(
@@ -181,28 +235,35 @@ async def references(
     Set include_declaration=false to exclude the definition itself.
     Paginated: use limit/offset, check hasMore for more results.
     """
-    from ..server import ensure_file_open, ensure_pyright_indexed
+    from ..server import ensure_file_open
 
-    client = await ensure_pyright_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
+    try:
+        client, resolved = await _resolve_client_and_file(file_path)
+    except PyrightNotInitializedError as e:
+        return _not_initialized_error(e)
+    except (PathValidationError, ValueError) as e:
+        return exception_to_tool_error(e)
 
     if ctx:
         await ctx.info(
-            f"Finding references at {file_path}:{line}:{character} "
+            f"Finding references at {resolved.display_path}:{line}:{character} "
             f"(limit: {limit}, offset: {offset})"
         )
 
     # Ensure file is open
-    await ensure_file_open(client, file_path, file_uri)
+    await ensure_file_open(client, resolved.path, resolved.uri)
 
-    response = await client.request(
-        LSPMethods.REFERENCES,
-        {
-            "textDocument": {"uri": file_uri},
-            "position": {"line": line, "character": character},
-            "context": {"includeDeclaration": include_declaration},
-        },
-    )
+    try:
+        response = await client.request(
+            LSPMethods.REFERENCES,
+            {
+                "textDocument": {"uri": resolved.uri},
+                "position": {"line": line, "character": character},
+                "context": {"includeDeclaration": include_declaration},
+            },
+        )
+    except LSPRequestError as e:
+        return exception_to_tool_error(e)
 
     items = response or []
     items.sort(key=location_sort_key)
@@ -226,23 +287,31 @@ async def document_symbols(
 
     Paginated: use limit/offset, check hasMore for more results.
     """
-    from ..server import ensure_file_open, ensure_pyright_indexed
+    from ..server import ensure_file_open
 
-    client = await ensure_pyright_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
+    try:
+        client, resolved = await _resolve_client_and_file(file_path)
+    except PyrightNotInitializedError as e:
+        return _not_initialized_error(e)
+    except (PathValidationError, ValueError) as e:
+        return exception_to_tool_error(e)
 
     if ctx:
         await ctx.info(
-            f"Getting document symbols for {file_path} (limit: {limit}, offset: {offset})"
+            f"Getting document symbols for {resolved.display_path} "
+            f"(limit: {limit}, offset: {offset})"
         )
 
     # Ensure file is open
-    await ensure_file_open(client, file_path, file_uri)
+    await ensure_file_open(client, resolved.path, resolved.uri)
 
-    response = await client.request(
-        LSPMethods.DOCUMENT_SYMBOL,
-        {"textDocument": {"uri": file_uri}},
-    )
+    try:
+        response = await client.request(
+            LSPMethods.DOCUMENT_SYMBOL,
+            {"textDocument": {"uri": resolved.uri}},
+        )
+    except LSPRequestError as e:
+        return exception_to_tool_error(e)
 
     symbols = response or []
 
@@ -287,69 +356,112 @@ async def _get_methods_via_completion(
 
     logger = logging.getLogger(__name__)
 
+    def identifier_bounds(line_text: str, cursor: int) -> tuple[int, int] | None:
+        """Find identifier bounds at or immediately before cursor."""
+        if not line_text:
+            return None
+        index = min(cursor, len(line_text) - 1)
+        if not (line_text[index].isalnum() or line_text[index] == "_"):
+            if cursor > 0 and (
+                line_text[cursor - 1].isalnum() or line_text[cursor - 1] == "_"
+            ):
+                index = cursor - 1
+            else:
+                return None
+
+        start = index
+        while start > 0 and (
+            line_text[start - 1].isalnum() or line_text[start - 1] == "_"
+        ):
+            start -= 1
+
+        end = index + 1
+        while end < len(line_text) and (
+            line_text[end].isalnum() or line_text[end] == "_"
+        ):
+            end += 1
+
+        return start, end
+
     # Read file content to find token boundaries
-    content = Path(file_path).read_text()
+    content = Path(file_path).read_text(encoding="utf-8")
     lines_list = content.splitlines()
     current_line = lines_list[line] if line < len(lines_list) else ""
 
-    # Find end of current token (variable name)
-    # Token ends at first non-identifier character
-    token_end = character
-    while token_end < len(current_line) and (
-        current_line[token_end].isalnum() or current_line[token_end] == "_"
-    ):
-        token_end += 1
+    bounds = identifier_bounds(current_line, character)
+    if bounds is None:
+        logger.info("type_info: no safe identifier for completion enrichment")
+        return []
+    _, token_end = bounds
 
     # Check if there's already a dot after the token
     has_dot = token_end < len(current_line) and current_line[token_end] == "."
+    modified_document = False
+    mgr = None
 
-    if has_dot:
-        # Dot already exists, complete at position after dot
-        dot_position = token_end + 1
-        logger.info(f"type_info: dot already exists, completing at {line}:{dot_position}")
-        response = await client.request(
-            LSPMethods.COMPLETION,
-            {
-                "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": dot_position},
-            },
-        )
-    else:
-        # Need to insert a dot - use didChange to modify document temporarily
-        # Get manager for proper version tracking (only needed when modifying)
-        from ..server import get_manager
+    try:
+        if has_dot:
+            # Dot already exists, complete at position after dot
+            dot_position = token_end + 1
+            logger.info(
+                f"type_info: dot already exists, completing at {line}:{dot_position}"
+            )
+            response = await client.request(
+                LSPMethods.COMPLETION,
+                {
+                    "textDocument": {"uri": file_uri},
+                    "position": {"line": line, "character": dot_position},
+                },
+            )
+        else:
+            # Need to insert a dot - use didChange to modify document temporarily
+            # Get manager for proper version tracking (only needed when modifying)
+            from ..server import get_manager
 
-        mgr = get_manager()
+            mgr = get_manager()
 
-        # Insert "." after the token
-        modified_line = current_line[:token_end] + "." + current_line[token_end:]
-        modified_lines = lines_list.copy()
-        modified_lines[line] = modified_line
+            # Insert "." after the token
+            modified_line = current_line[:token_end] + "." + current_line[token_end:]
+            modified_lines = lines_list.copy()
+            modified_lines[line] = modified_line
 
-        logger.info(
-            f"type_info: inserting dot at {line}:{token_end}, completing at {line}:{token_end + 1}"
-        )
+            logger.info(
+                f"type_info: inserting dot at {line}:{token_end}, "
+                f"completing at {line}:{token_end + 1}"
+            )
 
-        # Use manager to properly increment version
-        doc_version = mgr.increment_doc_version(file_path, file_uri)
+            # Use manager to properly increment version
+            doc_version = mgr.increment_doc_version(file_path, file_uri)
 
-        # Send didChange with the modified content
-        await client.notify(
-            LSPMethods.DID_CHANGE,
-            {
-                "textDocument": {"uri": file_uri, "version": doc_version},
-                "contentChanges": [{"text": "\n".join(modified_lines)}],
-            },
-        )
+            # Send didChange with the modified content
+            await client.notify(
+                LSPMethods.DID_CHANGE,
+                {
+                    "textDocument": {"uri": file_uri, "version": doc_version},
+                    "contentChanges": [{"text": "\n".join(modified_lines)}],
+                },
+            )
+            modified_document = True
 
-        # Complete at position after the inserted dot
-        response = await client.request(
-            LSPMethods.COMPLETION,
-            {
-                "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": token_end + 1},
-            },
-        )
+            # Complete at position after the inserted dot
+            response = await client.request(
+                LSPMethods.COMPLETION,
+                {
+                    "textDocument": {"uri": file_uri},
+                    "position": {"line": line, "character": token_end + 1},
+                },
+            )
+    finally:
+        # Restore original content if we modified it, even when completion fails.
+        if modified_document and mgr is not None:
+            restore_version = mgr.increment_doc_version(file_path, file_uri)
+            await client.notify(
+                LSPMethods.DID_CHANGE,
+                {
+                    "textDocument": {"uri": file_uri, "version": restore_version},
+                    "contentChanges": [{"text": content}],
+                },
+            )
 
     # Filter to method-like items
     # CompletionItemKind: 2=Method, 3=Function
@@ -406,19 +518,30 @@ async def _get_methods_via_completion(
             method_entry["documentation"] = documentation
         methods.append(method_entry)
 
-    # Restore original content if we modified it
-    if not has_dot:
-        # Increment version again for the restoration
-        restore_version = mgr.increment_doc_version(file_path, file_uri)
-        await client.notify(
-            LSPMethods.DID_CHANGE,
-            {
-                "textDocument": {"uri": file_uri, "version": restore_version},
-                "contentChanges": [{"text": content}],
-            },
-        )
-
     return methods
+
+
+def _type_name_from_hover(hover_response: Any) -> str:
+    """Best-effort extraction of a type name from Pyright hover contents."""
+    if not hover_response:
+        return "unknown"
+    contents = hover_response.get("contents", {})
+    if isinstance(contents, list):
+        contents = contents[0] if contents else {}
+    if isinstance(contents, str):
+        return contents.strip() or "unknown"
+    if isinstance(contents, dict):
+        value = str(contents.get("value", ""))
+        lines = value.split("\n")
+        for hover_line in lines:
+            hover_line = hover_line.strip()
+            if not hover_line or hover_line.startswith("```"):
+                continue
+            if ": " in hover_line:
+                return hover_line.split(": ", 1)[1].strip() or "unknown"
+            if not hover_line.startswith("//"):
+                return hover_line
+    return "unknown"
 
 
 async def type_info(
@@ -454,36 +577,51 @@ async def type_info(
     """
     import logging
 
-    from ..server import ensure_file_open, ensure_pyright_indexed
+    from ..server import ensure_file_open, get_project_root
     from ..utils import members_method_sort_key
 
     logger = logging.getLogger(__name__)
 
-    client = await ensure_pyright_indexed(file_path)
-    file_uri = ensure_file_uri(file_path)
-
-    # Resolve the file path for reading
-    resolved_path = file_path
-    if not Path(file_path).is_absolute():
-        resolved_path = str(Path.cwd() / file_path)
+    try:
+        client, resolved = await _resolve_client_and_file(file_path)
+    except PyrightNotInitializedError as e:
+        return _not_initialized_error(e)
+    except (PathValidationError, ValueError) as e:
+        return exception_to_tool_error(e)
 
     if ctx:
         await ctx.info(
-            f"Getting type info at {file_path}:{line}:{character} "
+            f"Getting type info at {resolved.display_path}:{line}:{character} "
             f"(limit: {limit}, offset: {offset})"
         )
 
     # Ensure file is open
-    await ensure_file_open(client, file_path, file_uri)
+    await ensure_file_open(client, resolved.path, resolved.uri)
+
+    try:
+        hover_response = await client.request(
+            LSPMethods.HOVER,
+            {
+                "textDocument": {"uri": resolved.uri},
+                "position": {"line": line, "character": character},
+            },
+        )
+    except LSPRequestError as e:
+        return exception_to_tool_error(e)
+
+    hover_type_name = _type_name_from_hover(hover_response)
 
     # Step 1: Get type definition location
-    type_def_response = await client.request(
-        LSPMethods.TYPE_DEFINITION,
-        {
-            "textDocument": {"uri": file_uri},
-            "position": {"line": line, "character": character},
-        },
-    )
+    try:
+        type_def_response = await client.request(
+            LSPMethods.TYPE_DEFINITION,
+            {
+                "textDocument": {"uri": resolved.uri},
+                "position": {"line": line, "character": character},
+            },
+        )
+    except LSPRequestError as e:
+        return exception_to_tool_error(e)
 
     # Handle single location or array of locations
     type_location = None
@@ -498,8 +636,7 @@ async def type_info(
     type_line = 0
     type_character = 0
     type_location_info: dict[str, Any] | None = None
-    type_file_content = None
-    type_name = "unknown"
+    type_name = hover_type_name
     type_kind = "primitive"  # Default to primitive if no type definition found
     field_symbols: list[dict[str, Any]] = []
     is_primitive_fallback = False  # Track if we're using hover fallback
@@ -514,39 +651,43 @@ async def type_info(
 
     if type_uri:
         # We have a type definition location - this is a user-defined type
-        type_file_path = type_uri.replace("file://", "")
+        project_root = get_project_root()
+        try:
+            type_file_path = file_uri_to_path(type_uri)
+            in_project = is_path_within_root(type_file_path, project_root)
+        except PathValidationError:
+            type_file_path = None
+            in_project = False
         type_location_info = {
-            "file_path": type_file_path,
+            "uri": type_uri,
             "line": type_line,
             "character": type_character,
+            "inProject": in_project,
         }
 
         logger.info(f"type_info: type definition at {type_uri}:{type_line}")
 
         # Step 2: Open the type definition file if it's a local file
         # This is needed for hover to work on fields
-        if Path(type_file_path).exists():
+        if in_project and type_file_path and type_file_path.exists():
             try:
-                type_file_content = Path(type_file_path).read_text()
-                await client.notify(
-                    LSPMethods.DID_OPEN,
-                    {
-                        "textDocument": {
-                            "uri": type_uri,
-                            "languageId": "python",
-                            "version": 1,
-                            "text": type_file_content,
-                        }
-                    },
-                )
+                await ensure_file_open(client, type_file_path, type_uri)
             except Exception as e:
                 logger.warning(f"Failed to open type file {type_uri}: {e}")
+        else:
+            logger.info("type_info: skipping external type definition inspection")
 
-        # Step 3: Get document symbols for the type definition file to find fields
-        type_symbols_response = await client.request(
-            LSPMethods.DOCUMENT_SYMBOL,
-            {"textDocument": {"uri": type_uri}},
-        )
+        # Step 3: Get document symbols for in-root type definition files to find fields
+        if in_project:
+            try:
+                type_symbols_response = await client.request(
+                    LSPMethods.DOCUMENT_SYMBOL,
+                    {"textDocument": {"uri": type_uri}},
+                )
+            except LSPRequestError as e:
+                return exception_to_tool_error(e)
+        else:
+            type_symbols_response = []
 
         type_symbols = type_symbols_response or []
 
@@ -569,44 +710,11 @@ async def type_info(
                         field_symbols.append(child)
                 break
     else:
-        # No type definition found - likely a built-in type
-        # Fall back to hover to get the type name
+        # No type definition found - likely a built-in type. Fall back to hover.
         logger.info("type_info: no type definition, falling back to hover for type name")
 
-        hover_response = await client.request(
-            LSPMethods.HOVER,
-            {
-                "textDocument": {"uri": file_uri},
-                "position": {"line": line, "character": character},
-            },
-        )
-
-        if hover_response:
-            contents = hover_response.get("contents", {})
-            # Contents may be string, {kind, value}, or array
-            if isinstance(contents, list):
-                contents = contents[0] if contents else {}
-            if isinstance(contents, str):
-                # Try to extract type from hover text
-                type_name = contents.strip()
-            elif isinstance(contents, dict):
-                value = contents.get("value", "")
-                # Parse type from markdown hover
-                lines = value.split("\n")
-                for hover_line in lines:
-                    hover_line = hover_line.strip()
-                    if hover_line.startswith("```"):
-                        continue
-                    # Look for type annotation pattern "name: Type" or just the type
-                    if ": " in hover_line:
-                        type_name = hover_line.split(": ", 1)[1].strip()
-                        break
-                    elif hover_line and not hover_line.startswith("//"):
-                        type_name = hover_line
-                        break
-
         if type_name == "unknown":
-            return {"error": "Could not determine type at position"}
+            return tool_error("type_not_found", "Could not determine type at position")
 
         is_primitive_fallback = True
         logger.info(f"type_info: detected primitive/external type: {type_name}")
@@ -673,31 +781,27 @@ async def type_info(
         f"type_info: found type {type_name} ({type_kind}) with {len(fields)} fields"
     )
 
-    # Close the type file if we opened it
-    if type_file_content is not None:
-        try:
-            await client.notify(
-                LSPMethods.DID_CLOSE,
-                {"textDocument": {"uri": type_uri}},
-            )
-        except Exception as e:
-            logger.warning(f"Failed to close type file {type_uri}: {e}")
-
     # Step 5: Get methods via completion (finds ALL methods including inherited)
     methods: list[dict[str, Any]] = []
-    if not is_primitive_fallback:
+    try:
         methods = await _get_methods_via_completion(
-            client, file_uri, resolved_path, line, character, include_documentation
+            client,
+            resolved.uri,
+            str(resolved.path),
+            line,
+            character,
+            include_documentation,
         )
-        # Sort methods: inherent first, then by class, then by name
-        methods.sort(key=members_method_sort_key)
+    except LSPRequestError as e:
+        return exception_to_tool_error(e)
+    except OSError as e:
+        return tool_error("file_read_error", str(e))
+
+    # Sort methods: inherent first, then by class, then by name
+    methods.sort(key=members_method_sort_key)
+    if not is_primitive_fallback:
         logger.info(f"type_info: found {len(methods)} methods via completion")
     else:
-        # For primitives, we can still try to get methods
-        methods = await _get_methods_via_completion(
-            client, file_uri, resolved_path, line, character, include_documentation
-        )
-        methods.sort(key=members_method_sort_key)
         logger.info(f"type_info: found {len(methods)} methods for primitive type")
 
     # Calculate totals
@@ -705,6 +809,8 @@ async def type_info(
     total_methods = len(methods)
 
     # Paginate methods only (fields are typically few and always returned in full)
+    offset = max(DEFAULT_PAGINATION_OFFSET, offset)
+    limit = max(1, limit)
     start_idx = min(offset, total_methods)
     end_idx = min(start_idx + limit, total_methods)
     paginated_methods = methods[start_idx:end_idx]

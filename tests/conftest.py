@@ -3,19 +3,28 @@ Pytest configuration and fixtures for pyright-mcp tests.
 """
 
 import asyncio
+import importlib.util
 import json
-import os
 import shutil
-import tempfile
-from pathlib import Path
-from typing import AsyncGenerator, Dict, Any
-import pytest
 
 # Add src directory to path to import jons_mcp_pyright
 import sys
+from collections.abc import AsyncGenerator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from jons_mcp_pyright import PyrightClient, PyrightClientManager
+
+
+def pyright_available() -> bool:
+    """Return True when a Pyright language server can be started."""
+    return importlib.util.find_spec("pyright") is not None or bool(
+        shutil.which("pyright-langserver")
+    )
 
 
 @pytest.fixture
@@ -32,25 +41,25 @@ requires-python = ">=3.10"
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 """)
-    
+
     # Create src directory
     src_dir = tmp_path / "src"
     src_dir.mkdir()
-    
+
     # Create __init__.py
     init_py = src_dir / "__init__.py"
     init_py.write_text('"""Test package."""\n')
-    
+
     # Create main.py
     main_py = src_dir / "main.py"
     main_py.write_text('''"""Main module for testing."""
 
 def greet(name: str) -> str:
     """Greet someone by name.
-    
+
     Args:
         name: The name to greet
-        
+
     Returns:
         A greeting message
     """
@@ -59,11 +68,11 @@ def greet(name: str) -> str:
 
 def add(a: int, b: int) -> int:
     """Add two numbers.
-    
+
     Args:
         a: First number
         b: Second number
-        
+
     Returns:
         Sum of a and b
     """
@@ -72,34 +81,34 @@ def add(a: int, b: int) -> int:
 
 class Calculator:
     """A simple calculator class."""
-    
+
     def __init__(self, initial_value: float = 0.0):
         """Initialize calculator with a value.
-        
+
         Args:
             initial_value: Starting value
         """
         self.value = initial_value
-    
+
     def add(self, x: float) -> None:
         """Add to the current value.
-        
+
         Args:
             x: Value to add
         """
         self.value += x
-    
+
     def multiply(self, x: float) -> None:
         """Multiply the current value.
-        
+
         Args:
             x: Value to multiply by
         """
         self.value *= x
-    
+
     def get_value(self) -> float:
         """Get the current value.
-        
+
         Returns:
             The current value
         """
@@ -112,7 +121,7 @@ if __name__ == "__main__":
     calc.add(5)
     print(f"Calculator value: {calc.get_value()}")
 ''')
-    
+
     # Create utils.py
     utils_py = src_dir / "utils.py"
     utils_py.write_text('''"""Utility functions."""
@@ -122,7 +131,7 @@ from typing import List, Optional, Protocol
 
 class Processor(Protocol):
     """Protocol for data processors."""
-    
+
     def process(self, data: str) -> str:
         """Process the data."""
         ...
@@ -130,13 +139,13 @@ class Processor(Protocol):
 
 class UppercaseProcessor:
     """Processor that converts to uppercase."""
-    
+
     def process(self, data: str) -> str:
         """Convert data to uppercase.
-        
+
         Args:
             data: Input string
-            
+
         Returns:
             Uppercase string
         """
@@ -145,11 +154,11 @@ class UppercaseProcessor:
 
 def filter_items(items: List[str], prefix: Optional[str] = None) -> List[str]:
     """Filter items by prefix.
-    
+
     Args:
         items: List of items to filter
         prefix: Optional prefix to filter by
-        
+
     Returns:
         Filtered list of items
     """
@@ -160,13 +169,13 @@ def filter_items(items: List[str], prefix: Optional[str] = None) -> List[str]:
 
 def parse_number(value: str) -> int | float:
     """Parse a string to a number.
-    
+
     Args:
         value: String representation of a number
-        
+
     Returns:
         Parsed number (int or float)
-        
+
     Raises:
         ValueError: If value cannot be parsed
     """
@@ -177,11 +186,11 @@ def parse_number(value: str) -> int | float:
         # Fall back to float
         return float(value)
 ''')
-    
+
     # Create test_main.py
     test_dir = tmp_path / "tests"
     test_dir.mkdir()
-    
+
     test_main_py = test_dir / "test_main.py"
     test_main_py.write_text('''"""Tests for main module."""
 
@@ -204,28 +213,28 @@ def test_add():
 
 class TestCalculator:
     """Test the Calculator class."""
-    
+
     def test_init(self):
         """Test calculator initialization."""
         calc = Calculator()
         assert calc.get_value() == 0.0
-        
+
         calc2 = Calculator(10.5)
         assert calc2.get_value() == 10.5
-    
+
     def test_add(self):
         """Test calculator addition."""
         calc = Calculator(5)
         calc.add(3)
         assert calc.get_value() == 8
-    
+
     def test_multiply(self):
         """Test calculator multiplication."""
         calc = Calculator(4)
         calc.multiply(3)
         assert calc.get_value() == 12
 ''')
-    
+
     # Create pyrightconfig.json
     pyrightconfig = tmp_path / "pyrightconfig.json"
     pyrightconfig.write_text(json.dumps({
@@ -236,21 +245,14 @@ class TestCalculator:
         "venvPath": ".",
         "venv": ".venv"
     }, indent=2))
-    
+
     return tmp_path
 
 
 @pytest.fixture
 async def pyright_client(temp_python_project: Path) -> AsyncGenerator[PyrightClient, None]:
     """Create and start a pyright client for testing."""
-    # Check if pyright is available
-    try:
-        import pyright
-        has_pyright = True
-    except ImportError:
-        has_pyright = False
-
-    if not has_pyright and not shutil.which("pyright-langserver"):
+    if not pyright_available():
         pytest.skip("pyright not found - install with 'pip install pyright'")
 
     client = PyrightClient(temp_python_project)
@@ -270,14 +272,7 @@ async def pyright_manager(temp_python_project: Path) -> AsyncGenerator[PyrightCl
 
     This fixture sets up the manager in the server module so tools work correctly.
     """
-    # Check if pyright is available
-    try:
-        import pyright
-        has_pyright = True
-    except ImportError:
-        has_pyright = False
-
-    if not has_pyright and not shutil.which("pyright-langserver"):
+    if not pyright_available():
         pytest.skip("pyright not found - install with 'pip install pyright'")
 
     from jons_mcp_pyright import server as server_module
@@ -302,7 +297,7 @@ async def pyright_manager(temp_python_project: Path) -> AsyncGenerator[PyrightCl
 
 
 @pytest.fixture
-def mock_lsp_messages() -> Dict[str, Any]:
+def mock_lsp_messages() -> dict[str, Any]:
     """Mock LSP messages for testing."""
     return {
         "initialize_response": {
@@ -568,14 +563,7 @@ async def multi_env_manager(multi_env_project: Path) -> AsyncGenerator[PyrightCl
 
     This discovers all three environments and sets up the server module.
     """
-    # Check if pyright is available
-    try:
-        import pyright
-        has_pyright = True
-    except ImportError:
-        has_pyright = False
-
-    if not has_pyright and not shutil.which("pyright-langserver"):
+    if not pyright_available():
         pytest.skip("pyright not found - install with 'pip install pyright'")
 
     from jons_mcp_pyright import server as server_module

@@ -1,16 +1,19 @@
 """LSP client for Pyright language server."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import queue
+import shlex
 import shutil
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, cast
 
 from .constants import REQUEST_TIMEOUT
 from .exceptions import LSPRequestError, PyrightNotFoundError
@@ -23,10 +26,10 @@ def read_pyright_config(project_root: Path) -> dict[str, Any]:
     config_path = project_root / "pyrightconfig.json"
     if config_path.exists():
         try:
-            with open(config_path, "r") as f:
+            with open(config_path) as f:
                 config = json.load(f)
                 logger.info(f"Loaded pyrightconfig.json: {config}")
-                return config
+                return cast(dict[str, Any], config)
         except Exception as e:
             logger.warning(f"Failed to read pyrightconfig.json: {e}")
     return {}
@@ -38,7 +41,7 @@ def get_python_interpreter(
     """Determine the Python interpreter path from config or environment."""
     # First check if pythonPath is explicitly set in config
     if "pythonPath" in config:
-        python_path = config["pythonPath"]
+        python_path = str(config["pythonPath"])
         if not Path(python_path).is_absolute():
             python_path = str(project_root / python_path)
         if Path(python_path).exists():
@@ -49,7 +52,7 @@ def get_python_interpreter(
 
     # Check for venv configuration
     if "venv" in config:
-        venv_path = config["venv"]
+        venv_path = str(config["venv"])
         if not Path(venv_path).is_absolute():
             # Handle venvPath + venv combination
             if "venvPath" in config:
@@ -78,15 +81,15 @@ def get_python_interpreter(
 
     # Check for common virtual environment locations
     for venv_dir in [".venv", "venv", ".pixi/envs/default", ".pixi/envs/dev"]:
-        venv_path = project_root / venv_dir
-        if venv_path.exists():
+        common_venv_path = project_root / venv_dir
+        if common_venv_path.exists():
             for python_exe in [
                 "bin/python",
                 "bin/python3",
                 "Scripts/python.exe",
                 "Scripts/python3.exe",
             ]:
-                python_path_candidate = venv_path / python_exe
+                python_path_candidate = common_venv_path / python_exe
                 if python_path_candidate.exists():
                     logger.info(
                         f"Found Python interpreter in {venv_dir}: {python_path_candidate}"
@@ -111,7 +114,7 @@ class PyrightClient:
         self.process: subprocess.Popen | None = None
         self.request_id = 0
         self.pending_requests: dict[int, asyncio.Future] = {}
-        self.notification_handlers: dict[str, Callable] = {}
+        self.notification_handlers: dict[str, Callable[..., Any]] = {}
         self._initialized = False
         self._shutting_down = False
         self.request_timeout = REQUEST_TIMEOUT
@@ -120,8 +123,9 @@ class PyrightClient:
         self._reader_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
         self._writer_lock = threading.Lock()
-        self._message_queue: queue.Queue = queue.Queue()
+        self._message_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._message_task: asyncio.Task[None] | None = None
 
     def _find_pyright(self) -> str:
         """Find pyright executable."""
@@ -149,8 +153,13 @@ class PyrightClient:
             return f"{path} --langserver"
 
         # Last resort: try node-based installation
+        if not shutil.which("npm"):
+            raise PyrightNotFoundError(
+                "pyright not found. Install it with: pip install pyright"
+            )
+
         npm_prefix = subprocess.run(
-            ["npm", "prefix", "-g"], capture_output=True, text=True
+            ["npm", "prefix", "-g"], capture_output=True, text=True, check=False
         ).stdout.strip()
 
         if npm_prefix:
@@ -172,7 +181,7 @@ class PyrightClient:
         """Check if the client is initialized."""
         return self._initialized
 
-    async def start(self):
+    async def start(self) -> None:
         """Start the pyright process and initialize communication."""
         if self.process:
             raise RuntimeError("Already started")
@@ -189,7 +198,7 @@ class PyrightClient:
 
         try:
             self.process = subprocess.Popen(
-                self.pyright_path.split(),
+                shlex.split(self.pyright_path),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -198,29 +207,36 @@ class PyrightClient:
                 bufsize=0,  # Unbuffered
             )
         except Exception as e:
-            raise RuntimeError(f"Failed to start pyright: {e}")
+            raise RuntimeError(f"Failed to start pyright: {e}") from e
 
-        # Start reader threads
-        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
-        self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True)
-        self._reader_thread.start()
-        self._stderr_thread.start()
+        try:
+            # Start reader threads
+            self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+            self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True)
+            self._reader_thread.start()
+            self._stderr_thread.start()
 
-        # Process messages from queue
-        asyncio.create_task(self._process_messages())
+            # Process messages from queue
+            self._message_task = asyncio.create_task(self._process_messages())
 
-        # Initialize LSP connection
-        await self._initialize()
+            # Initialize LSP connection
+            await self._initialize()
+        except Exception:
+            await self._cleanup_started_process()
+            raise
 
-    def _reader_loop(self):
+    def _reader_loop(self) -> None:
         """Read messages from stdout in a thread."""
         buffer = b""
         logger.debug("Reader thread started")
 
         while self.process and not self._shutting_down:
             try:
+                stdout = self.process.stdout
+                if not stdout:
+                    break
                 # Read one byte at a time to avoid blocking
-                byte = self.process.stdout.read(1)
+                byte = stdout.read(1)
                 if not byte:
                     logger.debug("Reader thread: EOF")
                     break
@@ -247,7 +263,7 @@ class PyrightClient:
                 # Read content
                 content_start = header_end + 4
                 while len(buffer) < content_start + content_length:
-                    chunk = self.process.stdout.read(
+                    chunk = stdout.read(
                         min(4096, content_start + content_length - len(buffer))
                     )
                     if not chunk:
@@ -274,7 +290,7 @@ class PyrightClient:
                     logger.error(f"Error in reader thread: {e}")
                 break
 
-    def _stderr_loop(self):
+    def _stderr_loop(self) -> None:
         """Read stderr in a thread."""
         while self.process and self.process.stderr and not self._shutting_down:
             try:
@@ -290,7 +306,7 @@ class PyrightClient:
             except Exception:
                 break
 
-    async def _process_messages(self):
+    async def _process_messages(self) -> None:
         """Process messages from the queue."""
         logger.debug("Message processor started")
         while not self._shutting_down:
@@ -310,7 +326,7 @@ class PyrightClient:
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
 
-    async def _handle_message(self, message: dict[str, Any]):
+    async def _handle_message(self, message: dict[str, Any]) -> None:
         """Handle incoming LSP message."""
         logger.debug(f"Received: {message}")
 
@@ -330,7 +346,7 @@ class PyrightClient:
 
                 for item in items:
                     section = item.get("section", "")
-                    config_response = {}
+                    config_response: dict[str, Any] = {}
 
                     if section == "python":
                         # Provide Python interpreter path if we have it
@@ -343,7 +359,7 @@ class PyrightClient:
                     elif section == "python.analysis":
                         # Provide analysis settings
                         if "extraPaths" in self.config:
-                            extra_paths = self.config["extraPaths"]
+                            extra_paths = cast(list[str], self.config["extraPaths"])
                             # Convert relative paths to absolute
                             abs_paths = []
                             for path in extra_paths:
@@ -411,7 +427,7 @@ class PyrightClient:
             else:
                 logger.debug(f"Unhandled notification: {method}")
 
-    async def _initialize(self):
+    async def _initialize(self) -> None:
         """Send LSP initialize request."""
         logger.debug("Sending initialize request...")
 
@@ -432,7 +448,7 @@ class PyrightClient:
 
         # Add extraPaths if specified
         if "extraPaths" in self.config:
-            extra_paths = self.config["extraPaths"]
+            extra_paths = cast(list[str], self.config["extraPaths"])
             # Convert relative paths to absolute
             abs_paths = []
             for path in extra_paths:
@@ -570,21 +586,21 @@ class PyrightClient:
             raise LSPRequestError(
                 f"Request {method} timed out after {self.request_timeout}s",
                 is_retryable=True,
-            )
+            ) from None
 
-    async def notify(self, method: str, params: Any = None):
+    async def notify(self, method: str, params: Any = None) -> None:
         """Send notification (no response expected)."""
         await self._send_message(
             {"jsonrpc": "2.0", "method": method, "params": params or {}}
         )
 
-    async def _send_message(self, message: dict[str, Any]):
+    async def _send_message(self, message: dict[str, Any]) -> None:
         """Send message to pyright."""
         if not self.process or not self.process.stdin:
             raise RuntimeError("Process not running")
 
         content = json.dumps(message).encode("utf-8")
-        header = f"Content-Length: {len(content)}\r\n\r\n".encode("utf-8")
+        header = f"Content-Length: {len(content)}\r\n\r\n".encode()
 
         # Thread-safe write
         with self._writer_lock:
@@ -593,11 +609,59 @@ class PyrightClient:
 
         logger.debug(f"Sent: {message}")
 
-    def on_notification(self, method: str, handler: Callable):
+    def on_notification(self, method: str, handler: Callable[..., Any]) -> None:
         """Register notification handler."""
         self.notification_handlers[method] = handler
 
-    async def shutdown(self):
+    async def _cleanup_started_process(self) -> None:
+        """Clean up a process that failed during startup."""
+        self._shutting_down = True
+        self._fail_pending_requests("pyright startup failed")
+        await self._cancel_message_task()
+        self._terminate_process()
+        self._join_threads()
+        self.process = None
+        self._initialized = False
+        self._shutting_down = False
+
+    def _fail_pending_requests(self, message: str) -> None:
+        """Fail all pending request futures."""
+        for future in self.pending_requests.values():
+            if not future.done():
+                future.set_exception(LSPRequestError(message, is_retryable=True))
+        self.pending_requests.clear()
+
+    async def _cancel_message_task(self) -> None:
+        """Cancel the async message processing task if it exists."""
+        if self._message_task and not self._message_task.done():
+            self._message_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._message_task
+        self._message_task = None
+
+    def _terminate_process(self) -> None:
+        """Terminate or kill the subprocess if still running."""
+        if not self.process:
+            return
+        if self.process.poll() is None:
+            logger.debug("Process still running, terminating...")
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.debug("Process didn't terminate, killing...")
+                self.process.kill()
+                self.process.wait()
+
+    def _join_threads(self) -> None:
+        """Join background reader threads briefly during shutdown."""
+        for thread in (self._reader_thread, self._stderr_thread):
+            if thread and thread.is_alive():
+                thread.join(timeout=1)
+        self._reader_thread = None
+        self._stderr_thread = None
+
+    async def shutdown(self) -> None:
         """Shutdown the language server."""
         if not self.process:
             return
@@ -621,16 +685,10 @@ class PyrightClient:
             logger.error(f"Error during shutdown: {e}")
             self._shutting_down = True
 
-        # Terminate process if still running
-        if self.process.poll() is None:
-            logger.debug("Process still running, terminating...")
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.debug("Process didn't terminate, killing...")
-                self.process.kill()
-                self.process.wait()
+        self._fail_pending_requests("pyright server shut down")
+        await self._cancel_message_task()
+        self._terminate_process()
+        self._join_threads()
 
         self.process = None
         self._initialized = False

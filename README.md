@@ -1,241 +1,165 @@
-# jons-mcp-pywright
+# jons-mcp-pyright
 
-A FastMCP server that exposes [pyright](https://github.com/microsoft/pyright) LSP features through the Model Context Protocol.
+A FastMCP stdio server that exposes Pyright language intelligence through MCP.
+It starts Pyright as a subprocess, keeps LSP document state fresh with disk
+contents, and provides root-bound tools for navigating and understanding Python
+projects.
+
+This project is not published on PyPI. Install or run it from GitHub or a local
+checkout.
 
 ## Installation
 
-```bash
-# Install from GitHub
-uvx --from git+https://github.com/jonmmease/jons-mcp-pywright jons-mcp-pywright
-
-# Or install the package (when published)
-uv add jons-mcp-pywright
-
-# Or install from source
-git clone https://github.com/jonmmease/jons-mcp-pywright.git
-cd jons-mcp-pywright
-uv sync
-```
-
-## Usage
-
-### Running the server
+Run directly from GitHub:
 
 ```bash
-# Run the installed script (via uvx)
-jons-mcp-pywright
-
-# Run via uv if installed with uv add
-uv run jons-mcp-pywright
-
-# Or run from source
-uv run src/jons_mcp_pyright.py
+uvx --from git+https://github.com/jonmmease/jons-pyright-mcp.git jons-mcp-pyright /path/to/python/project
 ```
 
-### Claude Code Integration
-
-Add as a project-scoped MCP server:
+Run from a local checkout:
 
 ```bash
-# Install directly from GitHub
-claude mcp add jons-mcp-pywright uvx -- --from git+https://github.com/jonmmease/jons-mcp-pywright jons-mcp-pywright
-
-# If already installed via uvx
-claude mcp add --scope project jons-mcp-pywright jons-mcp-pywright
-
-# If installed via uv add
-claude mcp add --scope project jons-mcp-pywright uv run jons-mcp-pywright
+git clone https://github.com/jonmmease/jons-pyright-mcp.git
+cd jons-pyright-mcp
+uv sync --extra dev
+uv run jons-mcp-pyright /path/to/python/project
 ```
 
-#### Running from a Local Directory
+The command is `jons-mcp-pyright`. The final optional argument is the target
+project root. If omitted, the server uses its current working directory.
 
-If you have the repository cloned locally and want to run the server from source:
+## MCP Client Setup
+
+### Claude Code
+
+From the Python project you want Pyright to analyze:
 
 ```bash
-# Clone if not already done
-git clone https://github.com/jonmmease/jons-mcp-pywright.git
-cd jons-mcp-pywright
-uv sync
-
-# Add to Claude Code (user scope - available in all projects)
-claude mcp add --scope user jons-mcp-pyright \
-  uv run --project /path/to/jons-mcp-pyright jons-mcp-pyright
-
-# Or add to a specific project only
-claude mcp add --scope project jons-mcp-pyright \
-  uv run --project /path/to/jons-mcp-pyright jons-mcp-pyright
+claude mcp add --scope project jons-mcp-pyright -- \
+  uvx --from git+https://github.com/jonmmease/jons-pyright-mcp.git \
+  jons-mcp-pyright "$(pwd)"
 ```
 
-Replace `/path/to/jons-mcp-pyright` with the actual path to your local clone.
-
-**Important:** Use `--project` (not `--directory`) so the server runs with the current working directory of your target project. This allows pyright to analyze the correct codebase and use its dependencies.
-
-To verify the server is configured:
+For a local server checkout:
 
 ```bash
-claude mcp list
+claude mcp add --scope project jons-mcp-pyright -- \
+  uv run --project /path/to/jons-pyright-mcp \
+  jons-mcp-pyright "$(pwd)"
 ```
 
-To remove later:
+### Codex CLI
 
 ```bash
-claude mcp remove jons-mcp-pyright
+codex mcp add jons-mcp-pyright -- \
+  uvx --from git+https://github.com/jonmmease/jons-pyright-mcp.git \
+  jons-mcp-pyright /path/to/python/project
 ```
 
-### Claude Desktop Integration
-
-Add to your Claude Desktop configuration:
+### `.mcp.json`
 
 ```json
 {
   "mcpServers": {
-    "jons-mcp-pywright": {
-      "command": "jons-mcp-pywright"
+    "jons-mcp-pyright": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/jonmmease/jons-pyright-mcp.git",
+        "jons-mcp-pyright",
+        "/absolute/path/to/python/project"
+      ]
     }
   }
 }
 ```
 
-Or if installed via `uv add`:
+### Codex TOML
 
-```json
-{
-  "mcpServers": {
-    "jons-mcp-pywright": {
-      "command": "uv",
-      "args": ["run", "jons-mcp-pywright"]
-    }
-  }
-}
+```toml
+[mcp_servers.jons-mcp-pyright]
+command = "uvx"
+args = [
+  "--from",
+  "git+https://github.com/jonmmease/jons-pyright-mcp.git",
+  "jons-mcp-pyright",
+  "/absolute/path/to/python/project",
+]
 ```
 
-## Features
+## Project Root Semantics
 
-### Core Language Features
-- `hover` - Get type information and documentation at a position
-- `completion` - Code completions with type information
-  - `limit`: Maximum items to return (default: 50)
-  - `offset`: Number of items to skip for pagination (default: 0)
-  - Returns: Items with absolute `offset` for direct retrieval
-- `definition` - Go to definition
-- `type_definition` - Go to type definition
-- `implementation` - Find implementations
-- `references` - Find all references
-  - `limit`: Maximum items to return (default: 50)
-  - `offset`: Number of items to skip for pagination (default: 0)
-  - Returns: Items with absolute `offset` for direct retrieval
-- `document_symbols` - List symbols in a document
-  - `limit`: Maximum items to return (default: 50)
-  - `offset`: Number of items to skip for pagination (default: 0)
-  - Returns: Items with absolute `offset` for direct retrieval
-- `workspace_symbols` - Search symbols across workspace
-  - `limit`: Maximum items to return (default: 50)
-  - `offset`: Number of items to skip for pagination (default: 0)
-  - Returns: Items with absolute `offset` for direct retrieval
+The configured project root is the filesystem boundary for all MCP tool file
+inputs.
 
-### Code Intelligence
-- `diagnostics` - Get type checking errors and warnings
-  - `limit`: Maximum items to return (default: 50)
-  - `offset`: Number of items to skip for pagination (default: 0)
-  - Returns: Items with absolute `offset` for direct retrieval
-- `code_actions` - Get available quick fixes
-- `rename` - Rename symbols across the project
-- `semantic_tokens` - Semantic syntax highlighting
-- `signature_help` - Function signature help
+- Relative paths resolve from the configured project root, not the MCP process
+  cwd.
+- Absolute paths and `file://` URIs must resolve inside the configured root.
+- `..` escapes, symlink escapes, missing files, and directories are rejected
+  before Pyright or the filesystem is touched.
+- LSP responses may include external locations, but the server does not open or
+  read external files for enrichment.
 
-### Formatting
-- `format_document` - Format entire document
-- `format_range` - Format selected range
-- `organize_imports` - Organize imports according to PEP 8
+Pyright reads `pyrightconfig.json` and Python project metadata from the selected
+root and discovered nested project roots. Virtual environments are detected from
+common names such as `.venv`, `venv`, `.env`, and Pixi environments under
+`.pixi/envs/<name>`.
 
-### pyright Extensions
-- `add_import` - Add missing import statements
-- `create_config` - Create pyrightconfig.json
-- `restart_server` - Restart the pyright server
+## Prerequisites
 
-### Pagination Support
+- Python 3.10 or newer.
+- `uv` for the documented install commands.
+- A Python target project. For best results, include `pyrightconfig.json` or
+  `pyproject.toml`.
+- Target-project dependencies should be installed in the environment Pyright
+  should analyze. The server can also be pointed at a specific Pyright command
+  with `PYRIGHT_PATH`.
 
-Tools that return lists now support pagination to handle large result sets efficiently:
+## Tools
 
-#### Example Usage
+Navigation and discovery:
 
-```python
-# Get first page of references
-result = await references(file_path="example.py", line=10, character=5, limit=20, offset=0)
-# Returns: {"items": [...], "totalItems": 150, "hasMore": true, "nextOffset": 20}
+- `document_symbols`
+- `definition`
+- `type_definition`
+- `implementation`
+- `references`
 
-# Get next page
-result = await references(file_path="example.py", line=10, character=5, limit=20, offset=20)
+Understanding code:
 
-# Get specific item by its offset
-result = await references(file_path="example.py", line=10, character=5, limit=1, offset=42)
-```
+- `symbol_info`
+- `type_info`
 
-Each paginated response includes:
-- `items`: Array of results with absolute `offset` for each item
-- `totalItems`: Total number of items available
-- `offset`: Current offset used
-- `limit`: Current limit used
-- `hasMore`: Boolean indicating if more items are available
-- `nextOffset`: Offset to use for the next page (if `hasMore` is true)
+Code intelligence and refactoring:
 
-## Configuration
+- `diagnostics`
+- `rename`
 
-The server uses the current working directory as the project root. It will look for:
-- `pyrightconfig.json`
-- `pyproject.toml` with `[tool.pyright]` section
-- Common Python project files (`setup.py`, `requirements.txt`, etc.)
+Server management:
 
-You can also set the `PYRIGHT_PATH` environment variable to use a specific pyright installation.
+- `list_environments`
+- `restart_server`
+
+Paginated tools return `items`, `totalItems`, `offset`, `limit`, `hasMore`, and
+`nextOffset`. Navigation tools return `items` and `totalItems`. Errors use a
+structured `error.code`, `error.message`, and `error.retryable` shape.
 
 ## Development
 
-### Setup
-
 ```bash
-# Clone the repository and sync dependencies
 uv sync --extra dev
-```
-
-### Running tests
-
-```bash
-# Run all tests
 uv run pytest
-
-# Run specific test files
-uv run pytest tests/test_lsp_client.py
-uv run pytest tests/test_mcp_tools.py
-
-# Run tests with coverage
-uv run pytest --cov=src
+uv run pytest --cov=src/jons_mcp_pyright --cov-report=term-missing
+uv run ruff check .
+uv run mypy src
+uv build --wheel --out-dir /tmp/jons-mcp-pyright-wheel
 ```
 
-### Development workflow
+Inspect a built wheel:
 
 ```bash
-# Run the server during development
-uv run src/jons_mcp_pyright.py
-
-# Run linting/type checking (if configured)
-uv run pyright src/
-
-# Install in development mode
-uv sync
+uv run python -m zipfile -l /tmp/jons-mcp-pyright-wheel/jons_mcp_pyright-0.1.0-py3-none-any.whl
 ```
 
-### Project Structure
-
-- `src/jons_mcp_pyright.py` - Main server implementation
-- `requirements.md` - Detailed requirements document
-- `tests/` - Test suite
-  - `conftest.py` - Test fixtures
-  - `test_lsp_client.py` - LSP client tests
-  - `test_mcp_tools.py` - MCP tool tests
-  - `test_integration.py` - Integration tests
-- `pyproject.toml` - Project configuration and dependencies
-- `uv.lock` - Dependency lock file
-
-## License
-
-This project follows the same license as the rust-analyzer MCP server it was based on.
+The wheel should contain top-level `jons_mcp_pyright`, not a packaged top-level
+`src` module, and should not include build artifacts or `node_modules`.

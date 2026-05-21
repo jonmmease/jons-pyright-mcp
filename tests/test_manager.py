@@ -1,17 +1,15 @@
 """Tests for PyrightClientManager."""
 
-import asyncio
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from jons_mcp_pyright.manager import (
+    DEFAULT_MAX_ACTIVE_CLIENTS,
     PyrightClientManager,
     get_max_active_clients,
-    DEFAULT_MAX_ACTIVE_CLIENTS,
 )
-from jons_mcp_pyright.environment import EnvironmentState
 
 
 class TestGetMaxActiveClients:
@@ -148,8 +146,8 @@ class TestGetClientForFile:
         assert client is mock_client
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_root_environment(self, tmp_path):
-        """Should fall back to root for unmatched files."""
+    async def test_rejects_external_files(self, tmp_path):
+        """Should reject files outside the configured project root."""
         (tmp_path / "pyproject.toml").write_text("")
 
         manager = PyrightClientManager(tmp_path)
@@ -160,10 +158,8 @@ class TestGetClientForFile:
         # External file that doesn't match any env
         external_file = "/tmp/random_file.py"
 
-        # This should fall back to root
-        client = await manager.get_client_for_file(external_file)
-
-        assert client is mock_client
+        with pytest.raises(ValueError, match="outside the configured project root"):
+            await manager.get_client_for_file(external_file)
 
 
 class TestLRUEviction:
@@ -188,7 +184,7 @@ class TestLRUEviction:
         # Set up mock clients
         root_env = manager.environments[str(tmp_path)]
         env_a = manager.environments[str(pkg_a)]
-        env_b = manager.environments[str(pkg_b)]
+        assert str(pkg_b) in manager.environments
 
         # Simulate clients with different access times
         root_mock_client = AsyncMock()

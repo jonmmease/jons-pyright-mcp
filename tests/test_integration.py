@@ -3,7 +3,9 @@ Integration tests for pyright-mcp server.
 """
 
 import asyncio
+import importlib.util
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,7 +16,6 @@ from jons_mcp_pyright.tools import (
     definition,
     diagnostics,
     document_symbols,
-    implementation,
     references,
     rename,
     symbol_info,
@@ -77,11 +78,8 @@ sum_val = add(1, 2)
         )
 
         # Check we got a location
-        if isinstance(result, list):
-            assert len(result) > 0
-            location = result[0]
-        else:
-            location = result
+        assert result["totalItems"] > 0
+        location = result["items"][0]
 
         assert "uri" in location
         assert location["uri"].endswith("main.py")
@@ -141,13 +139,14 @@ another = old_function()
         )
 
         if "error" not in result:
-            assert "changes" in result or "documentChanges" in result
+            workspace_edit = result["workspaceEdit"]
+            assert "changes" in workspace_edit or "documentChanges" in workspace_edit
 
             # If we got changes, verify they include our file
-            if "changes" in result:
+            if "changes" in workspace_edit:
                 file_uri = f"file://{rename_file.absolute()}"
-                assert file_uri in result["changes"]
-                edits = result["changes"][file_uri]
+                assert file_uri in workspace_edit["changes"]
+                edits = workspace_edit["changes"][file_uri]
                 assert len(edits) > 0  # Should have multiple edits for each occurrence
 
     @pytest.mark.asyncio
@@ -231,16 +230,11 @@ calc: Calculator = Calculator(10)
         )
 
         # Should return location pointing to Calculator class definition
-        if result:
-            if isinstance(result, list):
-                location = result[0] if result else None
-            else:
-                location = result
-
-            if location:
-                assert "uri" in location
-                assert "main.py" in location["uri"]
-                assert "range" in location
+        if result["totalItems"] > 0:
+            location = result["items"][0]
+            assert "uri" in location
+            assert "main.py" in location["uri"]
+            assert "range" in location
 
     @pytest.mark.asyncio
     async def test_references(
@@ -435,7 +429,8 @@ class TestMultiEnvironment:
         # Restart the environment containing the file
         result = await restart_server(file_path=str(pkg_a_file), ctx=None)
 
-        assert "pyright server restarted for environment containing" in result
+        assert result["status"] == "restarted"
+        assert result["scope"] == "environment"
 
     @pytest.mark.asyncio
     async def test_restart_environment_by_id(
@@ -452,7 +447,11 @@ class TestMultiEnvironment:
         # Restart by env_id
         result = await restart_server(env_id=pkg_b_path, ctx=None)
 
-        assert f"pyright server restarted for environment: {pkg_b_path}" in result
+        assert result == {
+            "status": "restarted",
+            "scope": "environment",
+            "env_id": pkg_b_path,
+        }
 
     @pytest.mark.asyncio
     async def test_backward_compatibility_single_env(
@@ -480,15 +479,7 @@ class TestLRUEviction:
         self, multi_env_project: Path, monkeypatch
     ):
         """Test that LRU eviction works when max clients is reached."""
-        import shutil
-
-        # Check if pyright is available
-        try:
-            import pyright
-            has_pyright = True
-        except ImportError:
-            has_pyright = False
-
+        has_pyright = importlib.util.find_spec("pyright") is not None
         if not has_pyright and not shutil.which("pyright-langserver"):
             pytest.skip("pyright not found")
 
@@ -540,7 +531,6 @@ class TestProcessCleanup:
         self, multi_env_manager: PyrightClientManager, multi_env_project: Path
     ):
         """Verify that shutdown cleans up all pyright processes."""
-        import subprocess
 
         # Start multiple environments
         pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
