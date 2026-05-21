@@ -116,10 +116,13 @@ class TestGetClientForFile:
         manager = PyrightClientManager(tmp_path)
 
         # Mock the client creation
-        with patch.object(manager, "_start_client", new_callable=AsyncMock) as mock_start:
+        with patch.object(
+            manager, "_start_client", new_callable=AsyncMock
+        ) as mock_start:
             # Manually set a mock client after _start_client is called
             async def set_mock_client(env):
                 env.client = MagicMock()
+
             mock_start.side_effect = set_mock_client
 
             test_file = tmp_path / "main.py"
@@ -198,7 +201,9 @@ class TestLRUEviction:
         manager._active_count = 2
 
         # Starting client for env_b should evict root (oldest)
-        with patch.object(PyrightClientManager, "_start_client", new_callable=AsyncMock):
+        with patch.object(
+            PyrightClientManager, "_start_client", new_callable=AsyncMock
+        ):
             await manager._evict_lru_client()
 
         # Root should have been shutdown (it was oldest)

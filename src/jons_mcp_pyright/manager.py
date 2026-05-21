@@ -153,7 +153,9 @@ class PyrightClientManager:
         env = self.get_environment_for_file(resolved_path)
 
         if not env:
-            raise ValueError(f"File is outside the configured project root: {file_path}")
+            raise ValueError(
+                f"File is outside the configured project root: {file_path}"
+            )
 
         # Update access time
         env.update_access_time()
@@ -230,7 +232,9 @@ class PyrightClientManager:
         uri = params.get("uri", "")
         diagnostics = params.get("diagnostics", [])
         env.diagnostics[uri] = diagnostics
-        logger.debug(f"Received {len(diagnostics)} diagnostics for {uri} in {env.env_id}")
+        logger.debug(
+            f"Received {len(diagnostics)} diagnostics for {uri} in {env.env_id}"
+        )
 
         # Signal any waiters for this URI
         waiters = self._diagnostic_waiters.pop(uri, [])
@@ -241,7 +245,9 @@ class PyrightClientManager:
         if self.notification_handler:
             # Add environment info to params
             augmented_params = {**params, "_env_id": env.env_id}
-            self.notification_handler("textDocument/publishDiagnostics", augmented_params)
+            self.notification_handler(
+                "textDocument/publishDiagnostics", augmented_params
+            )
 
     async def _evict_lru_client(self) -> None:
         """Evict the least recently used client."""
@@ -290,9 +296,7 @@ class PyrightClientManager:
             List of (env_id, client) tuples for active clients
         """
         return [
-            (env.env_id, env.client)
-            for env in self.environments.values()
-            if env.client
+            (env.env_id, env.client) for env in self.environments.values() if env.client
         ]
 
     def get_environment(self, env_id: str) -> EnvironmentState | None:
@@ -368,9 +372,7 @@ class PyrightClientManager:
 
         logger.info(f"Restarted environment: {env_id}")
 
-    async def _reopen_files(
-        self, env: EnvironmentState, uris: set[str]
-    ) -> None:
+    async def _reopen_files(self, env: EnvironmentState, uris: set[str]) -> None:
         """Re-open files in an environment after restart.
 
         Args:
@@ -385,7 +387,9 @@ class PyrightClientManager:
                 # Convert URI to path
                 file_path_obj = file_uri_to_path(uri).resolve()
                 if not is_path_within_root(file_path_obj, env.project_root):
-                    logger.warning("Skipping out-of-root document during reopen: %s", uri)
+                    logger.warning(
+                        "Skipping out-of-root document during reopen: %s", uri
+                    )
                     continue
                 file_path = str(file_path_obj)
 

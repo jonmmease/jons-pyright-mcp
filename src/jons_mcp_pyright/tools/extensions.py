@@ -38,7 +38,9 @@ async def list_environments(
             "project_root": str(env.project_root),
             "venv_path": str(env.venv_path) if env.venv_path else None,
             "is_active": env.client is not None,
-            "last_accessed": env.last_accessed.isoformat() if env.last_accessed else None,
+            "last_accessed": (
+                env.last_accessed.isoformat() if env.last_accessed else None
+            ),
             "opened_files_count": len(env.opened_files),
         }
         environments.append(env_info)

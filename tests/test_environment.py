@@ -102,7 +102,9 @@ class TestReadPyrightConfig:
     def test_valid_config(self, tmp_path):
         """Should read valid pyrightconfig.json."""
         config_path = tmp_path / "pyrightconfig.json"
-        config_path.write_text('{"typeCheckingMode": "strict", "pythonVersion": "3.10"}')
+        config_path.write_text(
+            '{"typeCheckingMode": "strict", "pythonVersion": "3.10"}'
+        )
 
         config = read_pyright_config(tmp_path)
 
@@ -461,9 +463,7 @@ class TestDiscoverEnvironments:
     def test_loads_pyrightconfig(self, tmp_path):
         """Should load pyrightconfig.json for each environment."""
         (tmp_path / "pyproject.toml").write_text("")
-        (tmp_path / "pyrightconfig.json").write_text(
-            '{"typeCheckingMode": "strict"}'
-        )
+        (tmp_path / "pyrightconfig.json").write_text('{"typeCheckingMode": "strict"}')
 
         envs = discover_environments(tmp_path)
 

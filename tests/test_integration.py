@@ -303,11 +303,10 @@ async def test_mcp_server_lifecycle():
 
     try:
         # Test that lifespan is properly configured
-        assert server._has_lifespan is True
+        assert server.lifespan is not None
 
         # The server should have our tools registered
-        tools = await server.get_tools()
-        # tools is a dictionary mapping tool names to tool objects
+        tools = {tool.name for tool in await server.list_tools()}
         assert "symbol_info" in tools
         assert "type_info" in tools
         assert "definition" in tools
@@ -501,20 +500,28 @@ class TestLRUEviction:
             assert root_client is not None
 
             # Access pkg-a file - starts pkg-a client (2 active now)
-            pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
+            pkg_a_file = (
+                multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
+            )
             pkg_a_client = await manager.get_client_for_file(str(pkg_a_file))
             assert pkg_a_client is not None
 
             # Count active clients
-            initial_active = sum(1 for e in manager.environments.values() if e.client is not None)
+            initial_active = sum(
+                1 for e in manager.environments.values() if e.client is not None
+            )
             assert initial_active == 2
 
             # Access pkg-b file - should evict oldest (root) client
-            pkg_b_file = multi_env_project / "packages" / "pkg-b" / "src" / "module_b.py"
+            pkg_b_file = (
+                multi_env_project / "packages" / "pkg-b" / "src" / "module_b.py"
+            )
             await manager.get_client_for_file(str(pkg_b_file))
 
             # Should still have at most 2 active clients
-            final_active = sum(1 for e in manager.environments.values() if e.client is not None)
+            final_active = sum(
+                1 for e in manager.environments.values() if e.client is not None
+            )
             assert final_active <= 2
 
         finally:

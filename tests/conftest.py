@@ -237,20 +237,27 @@ class TestCalculator:
 
     # Create pyrightconfig.json
     pyrightconfig = tmp_path / "pyrightconfig.json"
-    pyrightconfig.write_text(json.dumps({
-        "include": ["src", "tests"],
-        "exclude": ["**/__pycache__"],
-        "typeCheckingMode": "strict",
-        "pythonVersion": "3.10",
-        "venvPath": ".",
-        "venv": ".venv"
-    }, indent=2))
+    pyrightconfig.write_text(
+        json.dumps(
+            {
+                "include": ["src", "tests"],
+                "exclude": ["**/__pycache__"],
+                "typeCheckingMode": "strict",
+                "pythonVersion": "3.10",
+                "venvPath": ".",
+                "venv": ".venv",
+            },
+            indent=2,
+        )
+    )
 
     return tmp_path
 
 
 @pytest.fixture
-async def pyright_client(temp_python_project: Path) -> AsyncGenerator[PyrightClient, None]:
+async def pyright_client(
+    temp_python_project: Path,
+) -> AsyncGenerator[PyrightClient, None]:
     """Create and start a pyright client for testing."""
     if not pyright_available():
         pytest.skip("pyright not found - install with 'pip install pyright'")
@@ -267,7 +274,9 @@ async def pyright_client(temp_python_project: Path) -> AsyncGenerator[PyrightCli
 
 
 @pytest.fixture
-async def pyright_manager(temp_python_project: Path) -> AsyncGenerator[PyrightClientManager, None]:
+async def pyright_manager(
+    temp_python_project: Path,
+) -> AsyncGenerator[PyrightClientManager, None]:
     """Create and start a PyrightClientManager for integration testing.
 
     This fixture sets up the manager in the server module so tools work correctly.
@@ -306,11 +315,9 @@ def mock_lsp_messages() -> dict[str, Any]:
                 "hoverProvider": True,
                 "completionProvider": {
                     "resolveProvider": True,
-                    "triggerCharacters": [".", "(", "[", ",", " "]
+                    "triggerCharacters": [".", "(", "[", ",", " "],
                 },
-                "signatureHelpProvider": {
-                    "triggerCharacters": ["(", ","]
-                },
+                "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
                 "definitionProvider": True,
                 "typeDefinitionProvider": True,
                 "implementationProvider": True,
@@ -320,30 +327,25 @@ def mock_lsp_messages() -> dict[str, Any]:
                 "codeActionProvider": {
                     "codeActionKinds": ["quickfix", "source.organizeImports"]
                 },
-                "renameProvider": {
-                    "prepareProvider": True
-                },
+                "renameProvider": {"prepareProvider": True},
                 "documentFormattingProvider": True,
                 "documentRangeFormattingProvider": True,
                 "semanticTokensProvider": {
-                    "legend": {
-                        "tokenTypes": [],
-                        "tokenModifiers": []
-                    },
+                    "legend": {"tokenTypes": [], "tokenModifiers": []},
                     "full": True,
-                    "range": True
-                }
+                    "range": True,
+                },
             }
         },
         "hover_response": {
             "contents": {
                 "kind": "markdown",
-                "value": "```python\ndef add(a: int, b: int) -> int\n```\n\nAdd two numbers."
+                "value": "```python\ndef add(a: int, b: int) -> int\n```\n\nAdd two numbers.",
             },
             "range": {
                 "start": {"line": 14, "character": 4},
-                "end": {"line": 14, "character": 7}
-            }
+                "end": {"line": 14, "character": 7},
+            },
         },
         "completion_response": {
             "items": [
@@ -353,8 +355,8 @@ def mock_lsp_messages() -> dict[str, Any]:
                     "detail": "def print(*values, sep=' ', end='\\n', file=None, flush=False)",
                     "documentation": {
                         "kind": "markdown",
-                        "value": "Print objects to the text stream file."
-                    }
+                        "value": "Print objects to the text stream file.",
+                    },
                 },
                 {
                     "label": "len",
@@ -362,17 +364,17 @@ def mock_lsp_messages() -> dict[str, Any]:
                     "detail": "def len(__obj: Sized) -> int",
                     "documentation": {
                         "kind": "markdown",
-                        "value": "Return the length of an object."
-                    }
-                }
+                        "value": "Return the length of an object.",
+                    },
+                },
             ]
         },
         "definition_response": {
             "uri": "file:///test/src/main.py",
             "range": {
                 "start": {"line": 14, "character": 0},
-                "end": {"line": 25, "character": 15}
-            }
+                "end": {"line": 25, "character": 15},
+            },
         },
         "diagnostics_notification": {
             "uri": "file:///test/src/main.py",
@@ -380,15 +382,15 @@ def mock_lsp_messages() -> dict[str, Any]:
                 {
                     "range": {
                         "start": {"line": 10, "character": 4},
-                        "end": {"line": 10, "character": 11}
+                        "end": {"line": 10, "character": 11},
                     },
                     "severity": 1,  # Error
                     "code": "reportUndefinedVariable",
                     "source": "Pyright",
-                    "message": '"unknown" is not defined'
+                    "message": '"unknown" is not defined',
                 }
-            ]
-        }
+            ],
+        },
     }
 
 
@@ -404,6 +406,7 @@ def event_loop():
 def mock_initialization_state():
     """Mock the initialization state for tests."""
     from jons_mcp_pyright import server as server_module
+
     # Save original state
     original_complete = server_module.initialization_complete
     original_manager = server_module.manager
@@ -452,11 +455,16 @@ requires-python = ">=3.10"
 """)
 
     root_pyrightconfig = tmp_path / "pyrightconfig.json"
-    root_pyrightconfig.write_text(json.dumps({
-        "include": ["src"],
-        "typeCheckingMode": "basic",
-        "pythonVersion": "3.10",
-    }, indent=2))
+    root_pyrightconfig.write_text(
+        json.dumps(
+            {
+                "include": ["src"],
+                "typeCheckingMode": "basic",
+                "pythonVersion": "3.10",
+            },
+            indent=2,
+        )
+    )
 
     root_src = tmp_path / "src"
     root_src.mkdir()
@@ -482,11 +490,16 @@ requires-python = ">=3.10"
 """)
 
     pkg_a_pyrightconfig = pkg_a / "pyrightconfig.json"
-    pkg_a_pyrightconfig.write_text(json.dumps({
-        "include": ["src"],
-        "typeCheckingMode": "strict",
-        "pythonVersion": "3.10",
-    }, indent=2))
+    pkg_a_pyrightconfig.write_text(
+        json.dumps(
+            {
+                "include": ["src"],
+                "typeCheckingMode": "strict",
+                "pythonVersion": "3.10",
+            },
+            indent=2,
+        )
+    )
 
     pkg_a_src = pkg_a / "src"
     pkg_a_src.mkdir()
@@ -524,11 +537,16 @@ requires-python = ">=3.10"
 """)
 
     pkg_b_pyrightconfig = pkg_b / "pyrightconfig.json"
-    pkg_b_pyrightconfig.write_text(json.dumps({
-        "include": ["src"],
-        "typeCheckingMode": "basic",
-        "pythonVersion": "3.10",
-    }, indent=2))
+    pkg_b_pyrightconfig.write_text(
+        json.dumps(
+            {
+                "include": ["src"],
+                "typeCheckingMode": "basic",
+                "pythonVersion": "3.10",
+            },
+            indent=2,
+        )
+    )
 
     pkg_b_src = pkg_b / "src"
     pkg_b_src.mkdir()
@@ -558,7 +576,9 @@ PKG_B_CONSTANT = "pkg_b"
 
 
 @pytest.fixture
-async def multi_env_manager(multi_env_project: Path) -> AsyncGenerator[PyrightClientManager, None]:
+async def multi_env_manager(
+    multi_env_project: Path,
+) -> AsyncGenerator[PyrightClientManager, None]:
     """Create PyrightClientManager for multi-environment testing.
 
     This discovers all three environments and sets up the server module.

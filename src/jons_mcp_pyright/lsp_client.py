@@ -35,9 +35,7 @@ def read_pyright_config(project_root: Path) -> dict[str, Any]:
     return {}
 
 
-def get_python_interpreter(
-    project_root: Path, config: dict[str, Any]
-) -> str | None:
+def get_python_interpreter(project_root: Path, config: dict[str, Any]) -> str | None:
     """Determine the Python interpreter path from config or environment."""
     # First check if pythonPath is explicitly set in config
     if "pythonPath" in config:
@@ -211,8 +209,12 @@ class PyrightClient:
 
         try:
             # Start reader threads
-            self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
-            self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True)
+            self._reader_thread = threading.Thread(
+                target=self._reader_loop, daemon=True
+            )
+            self._stderr_thread = threading.Thread(
+                target=self._stderr_loop, daemon=True
+            )
             self._reader_thread.start()
             self._stderr_thread.start()
 
@@ -502,9 +504,7 @@ class PyrightClient:
                         "implementation": {"linkSupport": True},
                         "references": {},
                         "documentHighlight": {},
-                        "documentSymbol": {
-                            "hierarchicalDocumentSymbolSupport": True
-                        },
+                        "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
                         "formatting": {},
                         "rangeFormatting": {},
                         "rename": {"prepareSupport": True},
@@ -568,7 +568,12 @@ class PyrightClient:
 
         # Send request
         await self._send_message(
-            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params or {},
+            }
         )
 
         # Wait for response with timeout

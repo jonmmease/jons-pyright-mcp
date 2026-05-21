@@ -117,7 +117,9 @@ async def definition(
         return exception_to_tool_error(e)
 
     if ctx:
-        await ctx.info(f"Finding definition at {resolved.display_path}:{line}:{character}")
+        await ctx.info(
+            f"Finding definition at {resolved.display_path}:{line}:{character}"
+        )
 
     # Ensure file is open
     await ensure_file_open(client, resolved.path, resolved.uri)
@@ -644,7 +646,9 @@ async def type_info(
     if type_location:
         # Handle both Location (uri, range) and LocationLink formats
         type_uri = type_location.get("uri") or type_location.get("targetUri") or ""
-        type_range = type_location.get("range") or type_location.get("targetRange") or {}
+        type_range = (
+            type_location.get("range") or type_location.get("targetRange") or {}
+        )
         type_start = type_range.get("start", {})
         type_line = type_start.get("line", 0)
         type_character = type_start.get("character", 0)
@@ -711,7 +715,9 @@ async def type_info(
                 break
     else:
         # No type definition found - likely a built-in type. Fall back to hover.
-        logger.info("type_info: no type definition, falling back to hover for type name")
+        logger.info(
+            "type_info: no type definition, falling back to hover for type name"
+        )
 
         if type_name == "unknown":
             return tool_error("type_not_found", "Could not determine type at position")

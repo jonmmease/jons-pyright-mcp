@@ -135,9 +135,7 @@ async def diagnostics(
             env_diagnostics = mgr.get_diagnostics_for_environment(env_id)
             for uri, diags in env_diagnostics.items():
                 for diag in diags:
-                    all_diagnostics.append(
-                        {**diag, "uri": uri, "environment": env_id}
-                    )
+                    all_diagnostics.append({**diag, "uri": uri, "environment": env_id})
         except ValueError as e:
             return tool_error(
                 "environment_not_found",

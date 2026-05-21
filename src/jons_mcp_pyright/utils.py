@@ -75,7 +75,9 @@ def resolve_project_file(
         raise PathValidationError("file_path is required")
 
     root = project_root.resolve()
-    path = file_uri_to_path(raw_path) if raw_path.startswith("file://") else Path(raw_path)
+    path = (
+        file_uri_to_path(raw_path) if raw_path.startswith("file://") else Path(raw_path)
+    )
     if not path.is_absolute():
         path = root / path
 
@@ -96,7 +98,9 @@ def resolve_project_file(
     if must_exist and require_file and not resolved.is_file():
         raise PathValidationError(f"Path is not a file: {file_path}")
 
-    return ResolvedFilePath(path=resolved, uri=path_to_file_uri(resolved), project_root=root)
+    return ResolvedFilePath(
+        path=resolved, uri=path_to_file_uri(resolved), project_root=root
+    )
 
 
 def ensure_file_uri(file_path: str, project_root: Path | None = None) -> str:

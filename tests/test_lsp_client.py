@@ -37,18 +37,24 @@ class TestPyrightClient:
         monkeypatch.delenv("PYRIGHT_PATH", raising=False)
 
         # Mock the pyright module
-        with patch.dict('sys.modules', {'pyright': MagicMock()}):
+        with patch.dict("sys.modules", {"pyright": MagicMock()}):
             client = PyrightClient(tmp_path)
-            assert client.pyright_path == f"{sys.executable} -m pyright.langserver --stdio"
+            assert (
+                client.pyright_path == f"{sys.executable} -m pyright.langserver --stdio"
+            )
 
     def test_find_pyright_on_path(self, tmp_path: Path, monkeypatch):
         """Test finding pyright-langserver on PATH."""
         monkeypatch.delenv("PYRIGHT_PATH", raising=False)
 
         # Mock no pyright module
-        with patch.dict('sys.modules', {'pyright': None}):
+        with patch.dict("sys.modules", {"pyright": None}):
             with patch("shutil.which") as mock_which:
-                mock_which.side_effect = lambda cmd: "/usr/bin/pyright-langserver" if cmd == "pyright-langserver" else None
+                mock_which.side_effect = lambda cmd: (
+                    "/usr/bin/pyright-langserver"
+                    if cmd == "pyright-langserver"
+                    else None
+                )
                 client = PyrightClient(tmp_path)
                 assert client.pyright_path == "/usr/bin/pyright-langserver"
 
@@ -57,12 +63,14 @@ class TestPyrightClient:
         monkeypatch.delenv("PYRIGHT_PATH", raising=False)
 
         # Mock no pyright module and no pyright-langserver
-        with patch.dict('sys.modules', {'pyright': None}):
+        with patch.dict("sys.modules", {"pyright": None}):
             with patch("shutil.which") as mock_which:
+
                 def which_side_effect(cmd):
                     if cmd == "pyright":
                         return "/usr/bin/pyright"
                     return None
+
                 mock_which.side_effect = which_side_effect
 
                 client = PyrightClient(tmp_path)
@@ -72,7 +80,7 @@ class TestPyrightClient:
         """Test error when pyright is not found."""
         monkeypatch.delenv("PYRIGHT_PATH", raising=False)
 
-        with patch.dict('sys.modules', {'pyright': None}):
+        with patch.dict("sys.modules", {"pyright": None}):
             with patch("shutil.which") as mock_which:
                 mock_which.return_value = None
                 with pytest.raises(PyrightNotFoundError, match="pyright not found"):
@@ -105,7 +113,7 @@ class TestPyrightClient:
             stderr=subprocess.PIPE,
             cwd=str(tmp_path),
             env=unittest.mock.ANY,
-            bufsize=0
+            bufsize=0,
         )
         assert client.process == mock_process
 
@@ -128,7 +136,7 @@ class TestPyrightClient:
 
         # Check the complete message
         written_data = calls[0][0][0]
-        written_str = written_data.decode('utf-8')
+        written_str = written_data.decode("utf-8")
 
         # Should have header and content
         assert "Content-Length: " in written_str
@@ -138,7 +146,6 @@ class TestPyrightClient:
         header_end = written_str.find("\r\n\r\n") + 4
         content = written_str[header_end:]
         assert json.loads(content) == message
-
 
     @pytest.mark.asyncio
     async def test_handle_response(self, tmp_path: Path):
@@ -170,7 +177,7 @@ class TestPyrightClient:
         response = {
             "jsonrpc": "2.0",
             "id": 42,
-            "error": {"code": -32601, "message": "Method not found"}
+            "error": {"code": -32601, "message": "Method not found"},
         }
         await client._handle_message(response)
 
@@ -185,6 +192,7 @@ class TestPyrightClient:
 
         # Register notification handler
         handler_called = False
+
         async def handler(params):
             nonlocal handler_called
             handler_called = True
@@ -196,7 +204,7 @@ class TestPyrightClient:
         notification = {
             "jsonrpc": "2.0",
             "method": "textDocument/publishDiagnostics",
-            "params": {"uri": "file:///test.py"}
+            "params": {"uri": "file:///test.py"},
         }
         await client._handle_message(notification)
 
@@ -305,5 +313,5 @@ class TestPositionAndRange:
 
         assert range_obj.to_dict() == {
             "start": {"line": 10, "character": 5},
-            "end": {"line": 10, "character": 10}
+            "end": {"line": 10, "character": 10},
         }

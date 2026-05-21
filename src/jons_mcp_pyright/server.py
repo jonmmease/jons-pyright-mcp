@@ -78,7 +78,12 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
     # Check if this is a Python project
     if not any(
         (project_root / f).exists()
-        for f in ["setup.py", "pyproject.toml", "requirements.txt", "pyrightconfig.json"]
+        for f in [
+            "setup.py",
+            "pyproject.toml",
+            "requirements.txt",
+            "pyrightconfig.json",
+        ]
     ):
         logger.warning(
             "No Python project files found. "
@@ -439,9 +444,7 @@ def main() -> None:
     global _project_root
 
     # Parse command line arguments
-    parser = argparse.ArgumentParser(
-        description="MCP server for Pyright LSP features"
-    )
+    parser = argparse.ArgumentParser(description="MCP server for Pyright LSP features")
     parser.add_argument(
         "project_path",
         nargs="?",
@@ -453,7 +456,9 @@ def main() -> None:
     if args.project_path:
         _project_root = Path(args.project_path).resolve()
         if not _project_root.exists() or not _project_root.is_dir():
-            print(f"Error: Project path does not exist: {_project_root}", file=sys.stderr)
+            print(
+                f"Error: Project path does not exist: {_project_root}", file=sys.stderr
+            )
             sys.exit(1)
 
     # Register signal handlers

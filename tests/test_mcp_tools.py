@@ -180,7 +180,14 @@ class TestCoreLanguageFeatures:
     )
     @pytest.mark.parametrize(
         "path_case",
-        ["relative_escape", "absolute_outside", "file_uri_outside", "symlink_escape", "missing", "directory"],
+        [
+            "relative_escape",
+            "absolute_outside",
+            "file_uri_outside",
+            "symlink_escape",
+            "missing",
+            "directory",
+        ],
     )
     async def test_file_tools_reject_unsafe_paths(
         self, tmp_path: Path, tool_call, path_case: str
@@ -221,9 +228,7 @@ class TestCoreLanguageFeatures:
 
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(
-            return_value={
-                "contents": {"kind": "markdown", "value": "Test hover info"}
-            }
+            return_value={"contents": {"kind": "markdown", "value": "Test hover info"}}
         )
 
         setup_mock_manager(mock_client, tmp_path)
@@ -359,8 +364,14 @@ class TestCoreLanguageFeatures:
         test_file.write_text("# test")
 
         mock_refs = [
-            {"uri": "file:///test1.py", "range": {"start": {"line": 1, "character": 0}}},
-            {"uri": "file:///test2.py", "range": {"start": {"line": 5, "character": 10}}},
+            {
+                "uri": "file:///test1.py",
+                "range": {"start": {"line": 1, "character": 0}},
+            },
+            {
+                "uri": "file:///test2.py",
+                "range": {"start": {"line": 5, "character": 10}},
+            },
         ]
 
         mock_client = create_mock_client()
@@ -851,7 +862,12 @@ obj = MyClass()
 
         # First page: offset=0, limit=10
         result = await type_info(
-            file_path=str(test_file), line=0, character=0, limit=10, offset=0, ctx=mock_ctx
+            file_path=str(test_file),
+            line=0,
+            character=0,
+            limit=10,
+            offset=0,
+            ctx=mock_ctx,
         )
 
         assert result["totalMethods"] == 25
@@ -883,7 +899,10 @@ obj = MyClass()
             "label": "upper",
             "kind": 2,
             "detail": "(self) -> str",
-            "documentation": {"kind": "markdown", "value": "Return a copy of the string converted to uppercase."},
+            "documentation": {
+                "kind": "markdown",
+                "value": "Return a copy of the string converted to uppercase.",
+            },
         }
 
         mock_client.request = AsyncMock(
@@ -899,13 +918,19 @@ obj = MyClass()
 
         mock_ctx = AsyncMock()
         result = await type_info(
-            file_path=str(test_file), line=0, character=0, include_documentation=True, ctx=mock_ctx
+            file_path=str(test_file),
+            line=0,
+            character=0,
+            include_documentation=True,
+            ctx=mock_ctx,
         )
 
         assert result["typeName"] == "str"
         assert len(result["methods"]) >= 1
         # Check that at least one method has documentation
-        upper_method = next((m for m in result["methods"] if m["name"] == "upper"), None)
+        upper_method = next(
+            (m for m in result["methods"] if m["name"] == "upper"), None
+        )
         assert upper_method is not None
         assert "documentation" in upper_method
 
@@ -963,16 +988,21 @@ class TestGetMethodsViaCompletion:
         mock_client.request = AsyncMock(
             side_effect=[
                 completion_response,  # completion
-                {"label": "some_method", "kind": 2, "detail": "(self) -> int"},  # resolve
+                {
+                    "label": "some_method",
+                    "kind": 2,
+                    "detail": "(self) -> int",
+                },  # resolve
             ]
         )
 
         # Mock the manager for version tracking
         mock_manager = MagicMock()
-        mock_manager.increment_doc_version.side_effect = [2, 3]  # First for insert, second for restore
-        monkeypatch.setattr(
-            "jons_mcp_pyright.server.manager", mock_manager
-        )
+        mock_manager.increment_doc_version.side_effect = [
+            2,
+            3,
+        ]  # First for insert, second for restore
+        monkeypatch.setattr("jons_mcp_pyright.server.manager", mock_manager)
 
         methods = await _get_methods_via_completion(
             mock_client, file_uri, str(test_file), line=0, character=0
@@ -1015,7 +1045,11 @@ class TestGetMethodsViaCompletion:
             "items": [
                 {"label": "a_method", "kind": 2, "detail": "(self) -> None"},  # Method
                 {"label": "a_function", "kind": 3, "detail": "() -> int"},  # Function
-                {"label": "a_property", "kind": 10, "detail": "int"},  # Property - excluded
+                {
+                    "label": "a_property",
+                    "kind": 10,
+                    "detail": "int",
+                },  # Property - excluded
                 {"label": "a_field", "kind": 5, "detail": "str"},  # Field - excluded
             ]
         }
