@@ -14,6 +14,7 @@ from .environment import (
     get_environment_for_file,
 )
 from .exceptions import (
+    DocumentSyncError,
     LSPRequestError,
     PathValidationError,
     Position,
@@ -38,8 +39,9 @@ from .tools import (
     diagnostics,
     document_symbols,
     implementation,
+    list_environments,
+    preview_rename,
     references,
-    rename,
     restart_server,
     symbol_info,
     type_definition,
@@ -57,6 +59,7 @@ __all__ = [
     "READ_BUFFER_SIZE",
     "REQUEST_TIMEOUT",
     "SHUTDOWN_TIMEOUT",
+    "DocumentSyncError",
     "LSPRequestError",
     "Position",
     "PathValidationError",
@@ -87,6 +90,7 @@ __all__ = [
     "references",
     "document_symbols",
     "diagnostics",
-    "rename",
+    "list_environments",
+    "preview_rename",
     "restart_server",
 ]

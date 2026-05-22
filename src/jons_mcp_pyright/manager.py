@@ -567,6 +567,10 @@ class PyrightClientManager:
             if not self._diagnostic_waiters[uri]:
                 del self._diagnostic_waiters[uri]
 
+    def cleanup_diagnostic_waiters(self, events_to_remove: list[asyncio.Event]) -> None:
+        """Remove diagnostic waiters that will no longer be awaited."""
+        self._cleanup_waiters(events_to_remove)
+
     def get_opened_files(self, env_id: str) -> set[str]:
         """Get the set of opened files for an environment.
 

@@ -17,8 +17,8 @@ from jons_mcp_pyright.tools import (
     diagnostics,
     document_symbols,
     implementation,
+    preview_rename,
     references,
-    rename,
     restart_server,
     symbol_info,
     type_definition,
@@ -72,7 +72,9 @@ def setup_mock_manager(mock_client, tmp_path=None):
     mock_manager.environments = {str(project_root): mock_env}
     mock_manager.get_environment_for_file = MagicMock(return_value=mock_env)
     mock_manager.get_client_for_file = AsyncMock(return_value=mock_client)
-    mock_manager.is_file_opened = MagicMock(return_value=False)
+    mock_manager.is_file_opened = MagicMock(
+        side_effect=lambda _file_path, uri: uri in mock_env.opened_files
+    )
     mock_manager.mark_file_opened = MagicMock()
     mock_manager.increment_doc_version = MagicMock(return_value=1)
     mock_manager.get_all_diagnostics = MagicMock(return_value={})
@@ -151,9 +153,9 @@ class TestCoreLanguageFeatures:
         mock_client.request = AsyncMock(return_value={"contents": "ok"})
         setup_mock_manager(mock_client, project_root)
 
-        result = await symbol_info(file_path="test.py", line=0, character=0)
+        result = await symbol_info(file_path="test.py", line=1, character=1)
 
-        assert result == {"contents": "ok"}
+        assert result == {"content": "ok"}
         mock_client.request.assert_called_once_with(
             "textDocument/hover",
             {
@@ -174,7 +176,7 @@ class TestCoreLanguageFeatures:
             lambda path: references(path, 0, 0),
             lambda path: document_symbols(path),
             lambda path: diagnostics(file_path=path),
-            lambda path: rename(path, 0, 0, "new_name"),
+            lambda path: preview_rename(path, 1, 1, "new_name"),
             lambda path: restart_server(file_path=path),
         ],
     )
@@ -235,10 +237,10 @@ class TestCoreLanguageFeatures:
 
         mock_ctx = AsyncMock()
         result = await symbol_info(
-            file_path="test.py", line=10, character=5, ctx=mock_ctx
+            file_path="test.py", line=11, character=6, ctx=mock_ctx
         )
 
-        assert result["contents"]["value"] == "Test hover info"
+        assert result["content"] == "Test hover info"
         mock_client.request.assert_called_once_with(
             "textDocument/hover",
             {
@@ -257,10 +259,10 @@ class TestCoreLanguageFeatures:
 
         mock_ctx = AsyncMock()
         result = await symbol_info(
-            file_path="test.py", line=10, character=5, ctx=mock_ctx
+            file_path="test.py", line=11, character=6, ctx=mock_ctx
         )
 
-        assert result == {"contents": "No symbol information available"}
+        assert result == {"content": "No symbol information available"}
 
     @pytest.mark.asyncio
     async def test_symbol_info_still_initializing(self, tmp_path: Path):
@@ -273,7 +275,7 @@ class TestCoreLanguageFeatures:
 
         mock_ctx = AsyncMock()
         result = await symbol_info(
-            file_path="test.py", line=10, character=5, ctx=mock_ctx
+            file_path="test.py", line=11, character=6, ctx=mock_ctx
         )
 
         assert result["error"]["code"] == "pyright_initializing"
@@ -297,10 +299,21 @@ class TestCoreLanguageFeatures:
 
         mock_ctx = AsyncMock()
         result = await definition(
-            file_path="test.py", line=10, character=5, ctx=mock_ctx
+            file_path="test.py", line=11, character=6, ctx=mock_ctx
         )
 
-        assert result == {"items": [mock_location], "totalItems": 1}
+        assert result == {
+            "items": [
+                {
+                    "uri": "file:///test.py",
+                    "range": {
+                        "start": {"line": 1, "character": 1},
+                        "end": {"line": 6, "character": 11},
+                    },
+                }
+            ],
+            "totalItems": 1,
+        }
 
     @pytest.mark.asyncio
     async def test_type_definition(self, tmp_path: Path, monkeypatch):
@@ -324,10 +337,21 @@ class TestCoreLanguageFeatures:
 
         mock_ctx = AsyncMock()
         result = await type_definition(
-            file_path="test.py", line=10, character=5, ctx=mock_ctx
+            file_path="test.py", line=11, character=6, ctx=mock_ctx
         )
 
-        assert result == {"items": [mock_location], "totalItems": 1}
+        assert result == {
+            "items": [
+                {
+                    "uri": "file:///test.py",
+                    "range": {
+                        "start": {"line": 1, "character": 1},
+                        "end": {"line": 6, "character": 11},
+                    },
+                }
+            ],
+            "totalItems": 1,
+        }
 
     @pytest.mark.asyncio
     async def test_implementation(self, tmp_path: Path, monkeypatch):
@@ -350,7 +374,7 @@ class TestCoreLanguageFeatures:
 
         mock_ctx = AsyncMock()
         result = await implementation(
-            file_path="test.py", line=5, character=4, ctx=mock_ctx
+            file_path="test.py", line=6, character=5, ctx=mock_ctx
         )
 
         assert result["totalItems"] == 1
@@ -380,7 +404,7 @@ class TestCoreLanguageFeatures:
         setup_mock_manager(mock_client, tmp_path)
 
         result = await references(
-            file_path="test.py", line=10, character=5, include_declaration=False
+            file_path="test.py", line=11, character=6, include_declaration=False
         )
 
         # Result should be paginated response
@@ -495,8 +519,8 @@ class TestCodeIntelligence:
         assert result["items"][0]["message"] == "Error 1"
 
     @pytest.mark.asyncio
-    async def test_rename(self, tmp_path: Path):
-        """Test rename tool."""
+    async def test_preview_rename(self, tmp_path: Path):
+        """Test preview_rename tool."""
         mock_edit = {
             "changes": {
                 "file:///test.py": [
@@ -515,29 +539,41 @@ class TestCodeIntelligence:
         setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
-        result = await rename(
+        result = await preview_rename(
             file_path="test.py",
-            line=10,
-            character=5,
+            line=11,
+            character=6,
             new_name="new_name",
             ctx=mock_ctx,
         )
 
-        assert result == {"workspaceEdit": mock_edit}
+        assert result == {
+            "edits": [
+                {
+                    "uri": "file:///test.py",
+                    "range": {
+                        "start": {"line": 11, "character": 1},
+                        "end": {"line": 11, "character": 1},
+                    },
+                    "newText": "new_name",
+                }
+            ],
+            "totalEdits": 1,
+        }
 
     @pytest.mark.asyncio
-    async def test_rename_not_allowed(self, tmp_path: Path):
-        """Test rename tool when rename is not allowed."""
+    async def test_preview_rename_not_allowed(self, tmp_path: Path):
+        """Test preview_rename tool when rename is not allowed."""
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(return_value=None)
 
         setup_mock_manager(mock_client, tmp_path)
 
         mock_ctx = AsyncMock()
-        result = await rename(
+        result = await preview_rename(
             file_path="test.py",
-            line=10,
-            character=5,
+            line=11,
+            character=6,
             new_name="new_name",
             ctx=mock_ctx,
         )
@@ -615,8 +651,8 @@ class TestPyrightExtensions:
         mock_ctx = AsyncMock()
         result = await restart_server(env_id="/nonexistent", ctx=mock_ctx)
 
-        assert result["status"] == "error"
-        assert "No environment found" in result["message"]
+        assert result["error"]["code"] == "environment_not_found"
+        assert "No environment found" in result["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_restart_server_not_running(self):
@@ -691,35 +727,11 @@ obj = MyClass()
             "range": {"start": {"line": 0, "character": 0}},
         }
 
-        # Document symbols for the class
-        doc_symbols_response = [
-            {
-                "name": "MyClass",
-                "kind": 5,  # Class
-                "range": {"start": {"line": 0, "character": 0}},
-                "selectionRange": {"start": {"line": 0, "character": 6}},
-                "children": [
-                    {
-                        "name": "value",
-                        "kind": 8,  # Field
-                        "selectionRange": {"start": {"line": 1, "character": 4}},
-                    },
-                    {
-                        "name": "name",
-                        "kind": 8,  # Field
-                        "selectionRange": {"start": {"line": 2, "character": 4}},
-                    },
-                ],
-            }
-        ]
-
-        # Hover responses for fields
-        hover_value = {"contents": {"kind": "markdown", "value": "value: int"}}
-        hover_name = {"contents": {"kind": "markdown", "value": "name: str"}}
-
-        # Completion response for methods
+        # Completion response for fields and methods
         completion_response = {
             "items": [
+                {"label": "value", "kind": 5, "detail": "int"},
+                {"label": "name", "kind": 5, "detail": "str"},
                 {"label": "__init__", "kind": 2, "detail": "(self) -> None"},
                 {"label": "__str__", "kind": 2, "detail": "(self) -> str"},
             ]
@@ -729,10 +741,9 @@ obj = MyClass()
             side_effect=[
                 {"contents": {"kind": "markdown", "value": "obj: MyClass"}},  # hover
                 type_def_response,  # typeDefinition
-                doc_symbols_response,  # documentSymbol
-                hover_value,  # hover for value field
-                hover_name,  # hover for name field
                 completion_response,  # completion
+                {"label": "value", "kind": 5, "detail": "int"},  # resolve
+                {"label": "name", "kind": 5, "detail": "str"},  # resolve
                 {"label": "__init__", "kind": 2, "detail": "(self) -> None"},  # resolve
                 {"label": "__str__", "kind": 2, "detail": "(self) -> str"},  # resolve
             ]
@@ -742,16 +753,15 @@ obj = MyClass()
 
         mock_ctx = AsyncMock()
         result = await type_info(
-            file_path=str(test_file), line=4, character=0, ctx=mock_ctx
+            file_path=str(test_file), line=5, character=1, ctx=mock_ctx
         )
 
         assert result["typeName"] == "MyClass"
-        assert result["typeKind"] == "class"
-        assert result["typeLocation"] is not None
+        assert result["kind"] == "class"
+        assert result["sourceLocation"] is not None
         assert len(result["fields"]) == 2
-        assert result["fields"][0]["name"] == "value"
-        assert result["fields"][1]["name"] == "name"
-        assert result["totalMethods"] >= 0
+        assert {field["name"] for field in result["fields"]} == {"value", "name"}
+        assert result["methods"]["totalItems"] >= 2
 
     @pytest.mark.asyncio
     async def test_type_info_primitive(self, tmp_path: Path, monkeypatch):
@@ -790,14 +800,14 @@ obj = MyClass()
 
         mock_ctx = AsyncMock()
         result = await type_info(
-            file_path=str(test_file), line=0, character=0, ctx=mock_ctx
+            file_path=str(test_file), line=1, character=1, ctx=mock_ctx
         )
 
         assert result["typeName"] == "int"
-        assert result["typeKind"] == "primitive"
-        assert result["typeLocation"] is None
+        assert "kind" not in result
+        assert "sourceLocation" not in result
         assert result["fields"] == []
-        assert result["totalMethods"] >= 2
+        assert result["methods"]["totalItems"] >= 2
 
     @pytest.mark.asyncio
     async def test_type_info_no_type_found(self, tmp_path: Path, monkeypatch):
@@ -809,7 +819,6 @@ obj = MyClass()
         mock_client = create_mock_client()
         mock_client.request = AsyncMock(
             side_effect=[
-                None,  # typeDefinition
                 None,  # hover
             ]
         )
@@ -818,7 +827,7 @@ obj = MyClass()
 
         mock_ctx = AsyncMock()
         result = await type_info(
-            file_path=str(test_file), line=0, character=0, ctx=mock_ctx
+            file_path=str(test_file), line=1, character=1, ctx=mock_ctx
         )
 
         assert "error" in result
@@ -863,19 +872,19 @@ obj = MyClass()
         # First page: offset=0, limit=10
         result = await type_info(
             file_path=str(test_file),
-            line=0,
-            character=0,
+            line=1,
+            character=1,
             limit=10,
             offset=0,
             ctx=mock_ctx,
         )
 
-        assert result["totalMethods"] == 25
-        assert len(result["methods"]) == 10
-        assert result["offset"] == 0
-        assert result["limit"] == 10
-        assert result["hasMore"] is True
-        assert result["nextOffset"] == 10
+        assert result["methods"]["totalItems"] == 25
+        assert len(result["methods"]["items"]) == 10
+        assert result["methods"]["offset"] == 0
+        assert result["methods"]["limit"] == 10
+        assert result["methods"]["hasMore"] is True
+        assert result["methods"]["nextOffset"] == 10
 
     @pytest.mark.asyncio
     async def test_type_info_with_documentation(self, tmp_path: Path, monkeypatch):
@@ -919,17 +928,17 @@ obj = MyClass()
         mock_ctx = AsyncMock()
         result = await type_info(
             file_path=str(test_file),
-            line=0,
-            character=0,
+            line=1,
+            character=1,
             include_documentation=True,
             ctx=mock_ctx,
         )
 
         assert result["typeName"] == "str"
-        assert len(result["methods"]) >= 1
+        assert len(result["methods"]["items"]) >= 1
         # Check that at least one method has documentation
         upper_method = next(
-            (m for m in result["methods"] if m["name"] == "upper"), None
+            (m for m in result["methods"]["items"] if m["name"] == "upper"), None
         )
         assert upper_method is not None
         assert "documentation" in upper_method

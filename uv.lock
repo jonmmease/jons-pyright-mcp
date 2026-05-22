@@ -778,6 +778,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
+    { name = "pydantic" },
     { name = "pyright" },
 ]
 
@@ -817,6 +818,7 @@ requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=26.5.1" },
     { name = "fastmcp", specifier = ">=3.3.1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.1.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pyright", specifier = ">=1.1.402" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=9.0.3" },

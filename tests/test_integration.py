@@ -16,8 +16,8 @@ from jons_mcp_pyright.tools import (
     definition,
     diagnostics,
     document_symbols,
+    preview_rename,
     references,
-    rename,
     symbol_info,
     type_definition,
     type_info,
@@ -38,20 +38,16 @@ class TestPyrightIntegration:
 
         result = await symbol_info(
             file_path=str(file_path),
-            line=2,  # def greet line
-            character=4,  # on 'greet'
+            line=3,  # def greet line
+            character=5,  # on 'greet'
             ctx=None,
         )
 
-        assert "contents" in result
-        contents = result["contents"]
+        assert "content" in result
+        contents = result["content"]
 
         # Check that we got some hover info
-        if isinstance(contents, dict):
-            assert "value" in contents
-            assert "greet" in contents["value"].lower()
-        else:
-            assert len(contents) > 0
+        assert len(contents) > 0
 
     @pytest.mark.asyncio
     async def test_find_definition(
@@ -72,8 +68,8 @@ sum_val = add(1, 2)
         # Find definition of 'greet'
         result = await definition(
             file_path=str(test_file),
-            line=2,  # result = greet line
-            character=9,  # on 'greet'
+            line=3,  # result = greet line
+            character=10,  # on 'greet'
             ctx=None,
         )
 
@@ -113,10 +109,10 @@ sum_val = add(1, 2)
         assert "__init__" in names
 
     @pytest.mark.asyncio
-    async def test_rename_symbol(
+    async def test_preview_rename_symbol(
         self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):
-        """Test rename functionality with real pyright."""
+        """Test preview_rename functionality with real pyright."""
         # Create files for rename test
         rename_file = temp_python_project / "rename_test.py"
         rename_file.write_text("""def old_function():
@@ -130,24 +126,18 @@ another = old_function()
         await asyncio.sleep(0.5)
 
         # Try to rename old_function
-        result = await rename(
+        result = await preview_rename(
             file_path=str(rename_file),
-            line=0,  # def old_function line
-            character=4,  # on 'old_function'
+            line=1,  # def old_function line
+            character=5,  # on 'old_function'
             new_name="new_function",
             ctx=None,
         )
 
         if "error" not in result:
-            workspace_edit = result["workspaceEdit"]
-            assert "changes" in workspace_edit or "documentChanges" in workspace_edit
-
-            # If we got changes, verify they include our file
-            if "changes" in workspace_edit:
-                file_uri = f"file://{rename_file.absolute()}"
-                assert file_uri in workspace_edit["changes"]
-                edits = workspace_edit["changes"][file_uri]
-                assert len(edits) > 0  # Should have multiple edits for each occurrence
+            assert result["totalEdits"] > 0
+            file_uri = rename_file.resolve().as_uri()
+            assert any(edit["uri"] == file_uri for edit in result["edits"])
 
     @pytest.mark.asyncio
     async def test_type_info_on_class_instance(
@@ -169,21 +159,21 @@ calc.
         # Get type info on 'calc' variable on line 3 where dot exists
         result = await type_info(
             file_path=str(test_file),
-            line=3,  # calc.
-            character=0,  # on 'calc'
+            line=4,  # calc.
+            character=1,  # on 'calc'
             ctx=None,
         )
 
         # Verify we got type info
         assert "error" not in result, f"Got error: {result.get('error')}"
         assert result["typeName"] == "Calculator"
-        assert result["typeKind"] == "class"
-        assert result["typeLocation"] is not None
+        assert result["kind"] == "class"
+        assert result["sourceLocation"] is not None
 
         # Methods may or may not be returned depending on pyright's analysis state
         # but we should have proper response structure
-        assert "totalMethods" in result
         assert "methods" in result
+        assert "totalItems" in result["methods"]
 
     @pytest.mark.asyncio
     async def test_type_info_on_primitive(
@@ -199,8 +189,8 @@ y = x + 10
 
         result = await type_info(
             file_path=str(test_file),
-            line=0,
-            character=0,  # on 'x'
+            line=1,
+            character=1,  # on 'x'
             ctx=None,
         )
 
@@ -224,8 +214,8 @@ calc: Calculator = Calculator(10)
 
         result = await type_definition(
             file_path=str(test_file),
-            line=2,  # calc: Calculator = ...
-            character=0,  # on 'calc'
+            line=3,  # calc: Calculator = ...
+            character=1,  # on 'calc'
             ctx=None,
         )
 
@@ -246,8 +236,8 @@ calc: Calculator = Calculator(10)
 
         result = await references(
             file_path=str(main_file),
-            line=2,  # def greet(name: str)
-            character=4,  # on 'greet'
+            line=3,  # def greet(name: str)
+            character=5,  # on 'greet'
             include_declaration=True,
             ctx=None,
         )
@@ -311,6 +301,7 @@ async def test_mcp_server_lifecycle():
         assert "type_info" in tools
         assert "definition" in tools
         assert "diagnostics" in tools
+        assert "preview_rename" in tools
         assert "restart_server" in tools
         assert "list_environments" in tools
 
@@ -383,12 +374,12 @@ class TestMultiEnvironment:
         pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
         result = await symbol_info(
             file_path=str(pkg_a_file),
-            line=4,  # def func_a
-            character=4,
+            line=5,  # def func_a
+            character=5,
             ctx=None,
         )
 
-        assert "contents" in result
+        assert "content" in result
         # Should get info about func_a
 
     @pytest.mark.asyncio
@@ -422,7 +413,7 @@ class TestMultiEnvironment:
         pkg_a_file = multi_env_project / "packages" / "pkg-a" / "src" / "module_a.py"
 
         # First access the file to start the environment
-        await symbol_info(file_path=str(pkg_a_file), line=0, character=0, ctx=None)
+        await symbol_info(file_path=str(pkg_a_file), line=1, character=1, ctx=None)
         await asyncio.sleep(0.5)
 
         # Restart the environment containing the file
@@ -440,7 +431,7 @@ class TestMultiEnvironment:
 
         # Access a file to start the environment
         pkg_b_file = multi_env_project / "packages" / "pkg-b" / "src" / "module_b.py"
-        await symbol_info(file_path=str(pkg_b_file), line=0, character=0, ctx=None)
+        await symbol_info(file_path=str(pkg_b_file), line=1, character=1, ctx=None)
         await asyncio.sleep(0.5)
 
         # Restart by env_id
@@ -462,9 +453,9 @@ class TestMultiEnvironment:
 
         # All tools should work
         result = await symbol_info(
-            file_path=str(main_file), line=2, character=4, ctx=None
+            file_path=str(main_file), line=3, character=5, ctx=None
         )
-        assert "contents" in result
+        assert "content" in result
 
         result = await document_symbols(file_path=str(main_file), ctx=None)
         assert "items" in result

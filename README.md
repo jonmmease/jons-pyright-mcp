@@ -133,12 +133,18 @@ Understanding code:
 Code intelligence and refactoring:
 
 - `diagnostics`
-- `rename`
+- `preview_rename`
 
 Server management:
 
 - `list_environments`
 - `restart_server`
+
+All public `line` and `character` inputs and returned ranges are one-based.
+`preview_rename` is preview-only: it returns sorted text edits and never writes
+files. `type_info` works best when called on a value reference such as `obj` in
+`obj.method()`, rather than on a class or variable declaration, when member
+discovery is desired.
 
 Paginated tools return `items`, `totalItems`, `offset`, `limit`, `hasMore`, and
 `nextOffset`. Navigation tools return `items` and `totalItems`. Errors use a

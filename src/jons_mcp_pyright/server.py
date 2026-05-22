@@ -17,7 +17,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from .exceptions import PyrightNotInitializedError
+from .exceptions import DocumentSyncError, PyrightNotInitializedError
 from .lsp_client import PyrightClient
 from .manager import PyrightClientManager
 from .tools import (
@@ -26,8 +26,8 @@ from .tools import (
     document_symbols,
     implementation,
     list_environments,
+    preview_rename,
     references,
-    rename,
     restart_server,
     symbol_info,
     type_definition,
@@ -148,7 +148,7 @@ MCP server providing Pyright LSP features for Python code intelligence.
 ## Refactoring
 | Tool | Purpose |
 |------|---------|
-| rename | Safely rename a symbol across the project |
+| preview_rename | Preview all edits needed to rename a symbol; never writes files |
 
 ## Server Management
 | Tool | Purpose |
@@ -158,9 +158,17 @@ MCP server providing Pyright LSP features for Python code intelligence.
 
 ## Typical Workflow
 1. Use document_symbols to find code in a file
-2. Call type_info on a variable to discover its type, fields, and methods
+2. Call type_info on a value reference to discover its type, fields, and methods
 3. Use definition to navigate to source, references to find usages
 4. Check diagnostics after making changes
+
+## Coordinates
+All public line and character inputs and outputs are one-based. The server
+converts to Pyright's zero-based LSP positions internally.
+
+## Filesystem Boundary
+Relative paths resolve from the configured project root. All file-taking tools
+reject missing files, directories, symlink escapes, and paths outside that root.
 
 ## Pagination
 Tools returning lists (references, document_symbols, diagnostics, type_info methods)
@@ -254,7 +262,7 @@ async def ensure_pyright_indexed(file_path: str | Path | None = None) -> Pyright
 
 async def ensure_file_open(
     client: PyrightClient, file_path: str | Path, file_uri: str
-) -> bool:
+) -> None:
     """Ensure file is open in pyright with fresh content.
 
     Handles both initial file opening and stale file detection. If a file
@@ -266,8 +274,8 @@ async def ensure_file_open(
         file_path: Path to the file
         file_uri: URI of the file
 
-    Returns:
-        True if file is open with current content, False if opening failed
+    Raises:
+        DocumentSyncError: If the file cannot be synchronized safely.
     """
     mgr = get_manager()
     file_path = str(file_path)
@@ -278,23 +286,63 @@ async def ensure_file_open(
         if mgr.is_file_stale(file_path, file_uri):
             logger.debug(f"Detected stale file: {file_path}")
             try:
-                return await _refresh_stale_file(client, mgr, file_path, file_uri)
+                await _refresh_stale_file(client, mgr, file_path, file_uri)
             except FileNotFoundError:
                 # File was deleted - send didClose and clean up
                 logger.warning(f"File was deleted: {file_path}")
-                await _handle_deleted_file(client, mgr, file_path, file_uri)
-                return False
-        return True
+                try:
+                    await _handle_deleted_file(client, mgr, file_path, file_uri)
+                except Exception as exc:
+                    raise DocumentSyncError(
+                        f"Failed to close deleted file {file_path}: {exc}"
+                    ) from exc
+                raise DocumentSyncError(
+                    f"File was deleted before it could be synchronized: {file_path}"
+                ) from None
+            except Exception as exc:
+                raise DocumentSyncError(
+                    f"Failed to refresh file {file_path}: {exc}"
+                ) from exc
+        return
 
     # File not yet opened - open it fresh
     try:
-        return await _open_file_fresh(client, mgr, file_path, file_uri)
+        await _open_file_fresh(client, mgr, file_path, file_uri)
     except FileNotFoundError:
         logger.error(f"File not found: {file_path}")
-        return False
+        raise DocumentSyncError(f"File not found during sync: {file_path}") from None
     except Exception as e:
         logger.error(f"Failed to open file {file_path}: {e}")
-        return False
+        raise DocumentSyncError(f"Failed to open file {file_path}: {e}") from e
+
+
+async def ensure_file_open_and_ready(
+    client: PyrightClient,
+    file_path: str | Path,
+    file_uri: str,
+    *,
+    wait_for_diagnostics: bool = False,
+) -> None:
+    """Ensure a file is synchronized and optionally wait for fresh diagnostics."""
+    mgr = get_manager()
+    file_path_str = str(file_path)
+    needs_sync = not mgr.is_file_opened(file_path_str, file_uri) or mgr.is_file_stale(
+        file_path_str, file_uri
+    )
+    events: list[asyncio.Event] = []
+
+    if wait_for_diagnostics and needs_sync:
+        events.append(mgr.register_diagnostic_waiter(file_uri))
+
+    try:
+        await ensure_file_open(client, file_path_str, file_uri)
+    except Exception:
+        if events:
+            mgr.cleanup_diagnostic_waiters(events)
+        raise
+
+    if events:
+        await mgr.wait_for_diagnostics(events)
 
 
 async def _open_file_fresh(
@@ -422,7 +470,7 @@ mcp.tool(implementation)
 mcp.tool(references)
 mcp.tool(document_symbols)
 mcp.tool(diagnostics)
-mcp.tool(rename)
+mcp.tool(preview_rename)
 mcp.tool(list_environments)
 mcp.tool(restart_server)
 

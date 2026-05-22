@@ -1,12 +1,22 @@
 """Utility functions for the Pyright MCP server."""
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import unquote, urlparse
 
 from .constants import DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET
-from .exceptions import LSPRequestError, PathValidationError
+from .exceptions import DocumentSyncError, LSPRequestError, PathValidationError
+from .schemas import (
+    ErrorDetail,
+    NavigationLocation,
+    NavigationResult,
+    PublicPosition,
+    PublicRange,
+    ToolErrorResult,
+    dump_model,
+)
 
 T = TypeVar("T")
 
@@ -129,39 +139,135 @@ def tool_error(
     message: str,
     *,
     retryable: bool = False,
-    **extra: Any,
 ) -> dict[str, Any]:
     """Return a consistent MCP tool error payload."""
-    payload: dict[str, Any] = {
-        "error": {
-            "code": code,
-            "message": message,
-            "retryable": retryable,
-        }
-    }
-    payload.update(extra)
-    return payload
+    return dump_model(
+        ToolErrorResult(
+            error=ErrorDetail(
+                code=code,
+                message=message,
+                retryable=retryable,
+            )
+        )
+    )
 
 
 def exception_to_tool_error(exc: Exception) -> dict[str, Any]:
     """Convert a known exception to the public tool error shape."""
     if isinstance(exc, PathValidationError):
         return tool_error(exc.code, str(exc))
+    if isinstance(exc, DocumentSyncError):
+        return tool_error(exc.code, str(exc), retryable=True)
     if isinstance(exc, LSPRequestError):
         code = "lsp_timeout" if exc.is_retryable else "lsp_error"
         return tool_error(code, exc.message, retryable=exc.is_retryable)
     return tool_error(type(exc).__name__, str(exc))
 
 
+def public_position_to_lsp(line: int, character: int) -> dict[str, int]:
+    """Convert one-based public coordinates to zero-based LSP coordinates."""
+    return {
+        "line": max(0, line - 1),
+        "character": max(0, character - 1),
+    }
+
+
+def _lsp_position_to_public(position: dict[str, Any]) -> dict[str, int]:
+    """Convert a zero-based LSP position to a one-based public position."""
+    return {
+        "line": max(0, int(position.get("line", 0))) + 1,
+        "character": max(0, int(position.get("character", 0))) + 1,
+    }
+
+
+def _is_lsp_position(value: dict[str, Any]) -> bool:
+    """Return True when a dict looks like an LSP Position."""
+    return "line" in value and "character" in value
+
+
+def lsp_result_to_public(value: Any) -> Any:
+    """Recursively convert LSP line/character positions to one-based output."""
+    if isinstance(value, list):
+        return [lsp_result_to_public(item) for item in value]
+    if isinstance(value, dict):
+        if _is_lsp_position(value):
+            return _lsp_position_to_public(value)
+        return {key: lsp_result_to_public(item) for key, item in value.items()}
+    return value
+
+
+def _public_range_from_lsp(range_value: dict[str, Any] | None) -> PublicRange:
+    """Build a public range from an LSP range, filling missing ends defensively."""
+    range_value = range_value or {}
+    start = range_value.get("start") or {}
+    end = range_value.get("end") or start
+    return PublicRange(
+        start=PublicPosition(**_lsp_position_to_public(start)),
+        end=PublicPosition(**_lsp_position_to_public(end)),
+    )
+
+
 def locations_to_items(response: Any) -> list[dict[str, Any]]:
-    """Normalize LSP Location/LocationLink responses to a list."""
+    """Normalize LSP Location/LocationLink responses to public location dicts."""
     if not response:
         return []
     if isinstance(response, list):
-        return [item for item in response if isinstance(item, dict)]
+        locations = [item for item in response if isinstance(item, dict)]
     if isinstance(response, dict):
-        return [response]
-    return []
+        locations = [response]
+    elif not isinstance(response, list):
+        return []
+
+    normalized: list[NavigationLocation] = []
+    seen: set[str] = set()
+    for item in locations:
+        if "targetUri" in item:
+            uri = item.get("targetUri")
+            range_value = item.get("targetSelectionRange") or item.get("targetRange")
+            full_range_value = item.get("targetRange")
+            origin_range_value = item.get("originSelectionRange")
+            if not uri or not range_value:
+                continue
+            location = NavigationLocation(
+                uri=uri,
+                range=_public_range_from_lsp(range_value),
+                fullRange=(
+                    _public_range_from_lsp(full_range_value)
+                    if full_range_value and full_range_value != range_value
+                    else None
+                ),
+                originRange=(
+                    _public_range_from_lsp(origin_range_value)
+                    if origin_range_value
+                    else None
+                ),
+            )
+        else:
+            uri = item.get("uri")
+            range_value = item.get("range")
+            if not uri or not range_value:
+                continue
+            location = NavigationLocation(
+                uri=uri,
+                range=_public_range_from_lsp(range_value),
+            )
+
+        key = json.dumps(dump_model(location), sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(location)
+
+    normalized.sort(key=lambda item: location_sort_key(dump_model(item)))
+    return [dump_model(item) for item in normalized]
+
+
+def navigation_result(response: Any) -> dict[str, Any]:
+    """Return a validated public navigation response."""
+    items = [
+        NavigationLocation.model_validate(item) for item in locations_to_items(response)
+    ]
+    return dump_model(NavigationResult(items=items, totalItems=len(items)))
 
 
 def apply_pagination(

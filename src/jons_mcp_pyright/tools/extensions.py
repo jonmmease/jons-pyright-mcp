@@ -6,6 +6,12 @@ from typing import Any
 from fastmcp import Context
 
 from ..exceptions import PathValidationError
+from ..schemas import (
+    EnvironmentItem,
+    ListEnvironmentsResult,
+    RestartServerResult,
+    dump_model,
+)
 from ..utils import exception_to_tool_error
 
 logger = logging.getLogger(__name__)
@@ -30,27 +36,27 @@ async def list_environments(
 
     mgr = get_manager()
 
-    environments: list[dict[str, Any]] = []
+    environments: list[EnvironmentItem] = []
 
     for env in mgr.environments.values():
-        env_info = {
-            "env_id": env.env_id,
-            "project_root": str(env.project_root),
-            "venv_path": str(env.venv_path) if env.venv_path else None,
-            "is_active": env.client is not None,
-            "last_accessed": (
-                env.last_accessed.isoformat() if env.last_accessed else None
-            ),
-            "opened_files_count": len(env.opened_files),
-        }
+        env_info = EnvironmentItem(
+            env_id=env.env_id,
+            project_root=str(env.project_root),
+            venv_path=str(env.venv_path) if env.venv_path else None,
+            is_active=env.client is not None,
+            last_accessed=env.last_accessed.isoformat() if env.last_accessed else None,
+            opened_files_count=len(env.opened_files),
+        )
         environments.append(env_info)
 
-    return {
-        "total": len(environments),
-        "active_count": sum(1 for e in environments if e["is_active"]),
-        "project_root": str(get_project_root()),
-        "environments": environments,
-    }
+    return dump_model(
+        ListEnvironmentsResult(
+            total=len(environments),
+            active_count=sum(1 for env in environments if env.is_active),
+            project_root=str(get_project_root()),
+            environments=environments,
+        )
+    )
 
 
 async def restart_server(
@@ -86,17 +92,21 @@ async def restart_server(
             await ctx.info(f"Restarting pyright server for {resolved.display_path}...")
         env = mgr.get_environment_for_file(str(resolved.path))
         if not env:
-            return {
-                "status": "error",
-                "message": f"No environment found for file: {resolved.display_path}",
-            }
+            from ..utils import tool_error
+
+            return tool_error(
+                "environment_not_found",
+                f"No environment found for file: {resolved.display_path}",
+            )
         await mgr.restart_environment(env.env_id)
-        return {
-            "status": "restarted",
-            "scope": "environment",
-            "env_id": env.env_id,
-            "file": resolved.uri,
-        }
+        return dump_model(
+            RestartServerResult(
+                status="restarted",
+                scope="environment",
+                env_id=env.env_id,
+                file=resolved.uri,
+            )
+        )
 
     elif env_id:
         # Mode 2: Restart specific environment by ID
@@ -104,13 +114,21 @@ async def restart_server(
             await ctx.info(f"Restarting pyright server for environment {env_id}...")
         try:
             await mgr.restart_environment(env_id)
-            return {"status": "restarted", "scope": "environment", "env_id": env_id}
+            return dump_model(
+                RestartServerResult(
+                    status="restarted",
+                    scope="environment",
+                    env_id=env_id,
+                )
+            )
         except ValueError as e:
-            return {"status": "error", "message": str(e)}
+            from ..utils import tool_error
+
+            return tool_error("environment_not_found", str(e))
 
     else:
         # Mode 3: Restart all environments and re-discover
         if ctx:
             await ctx.info("Restarting all pyright servers...")
         await mgr.restart_all()
-        return {"status": "restarted", "scope": "all"}
+        return dump_model(RestartServerResult(status="restarted", scope="all"))

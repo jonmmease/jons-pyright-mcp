@@ -1,7 +1,7 @@
 """MCP tools for Pyright."""
 
 from .extensions import list_environments, restart_server
-from .intelligence import diagnostics, rename
+from .intelligence import diagnostics, preview_rename
 from .language import (
     definition,
     document_symbols,
@@ -23,7 +23,7 @@ __all__ = [
     "document_symbols",
     # Intelligence tools
     "diagnostics",
-    "rename",
+    "preview_rename",
     # Extension tools
     "list_environments",
     "restart_server",

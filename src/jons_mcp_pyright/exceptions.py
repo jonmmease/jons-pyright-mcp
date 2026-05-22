@@ -48,6 +48,12 @@ class PathValidationError(ValueError):
     code = "path_validation_error"
 
 
+class DocumentSyncError(RuntimeError):
+    """Raised when a document cannot be synchronized with Pyright safely."""
+
+    code = "document_sync_error"
+
+
 @dataclass
 class Position:
     """LSP position in a text document."""

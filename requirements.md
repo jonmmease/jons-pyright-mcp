@@ -60,7 +60,7 @@ The implementation is essentially JSON-RPC over stdio with header parsing - stra
 #### Code Intelligence
 - `diagnostics` - Get current diagnostics
 - `code_actions` - Get available code actions
-- `rename` - Rename symbol
+- `preview_rename` - Preview all edits for a symbol rename without writing files
 - `semantic_tokens` - Get semantic highlighting
 - `signature_help` - Get function signature help
 

@@ -32,7 +32,7 @@ uv build --wheel --out-dir /tmp/jons-mcp-pyright-wheel
   tool response helpers.
 - `tools/language.py`: symbol, navigation, references, document symbols, and
   `type_info`.
-- `tools/intelligence.py`: diagnostics and rename.
+- `tools/intelligence.py`: diagnostics and rename previews.
 - `tools/extensions.py`: environment listing and restart.
 
 ## Invariants
@@ -49,12 +49,14 @@ uv build --wheel --out-dir /tmp/jons-mcp-pyright-wheel
   missing files, and directories are rejected.
 - External LSP locations may be returned but must not be opened or read.
 - Stdout must remain MCP-protocol clean; logs go to stderr.
-- `rename` returns a workspace edit and does not write files.
+- Public `line` and `character` inputs and returned ranges are one-based.
+- `preview_rename` returns a sorted edit preview and does not write files.
+- Call `type_info` on value references when member discovery is desired.
 
 ## MCP Tools
 
 `symbol_info`, `type_info`, `definition`, `type_definition`, `implementation`,
-`references`, `document_symbols`, `diagnostics`, `rename`, `list_environments`,
-and `restart_server`.
+`references`, `document_symbols`, `diagnostics`, `preview_rename`,
+`list_environments`, and `restart_server`.
 
 Tool errors use `error.code`, `error.message`, and `error.retryable`.

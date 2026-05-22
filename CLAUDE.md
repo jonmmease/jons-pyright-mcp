@@ -65,13 +65,15 @@ src/jons_mcp_pyright/
 - LSP-returned external locations may be returned to the caller, but do not open
   or read external files for enrichment.
 - Keep stdout protocol-clean; logs and startup errors go to stderr.
-- `rename` returns a workspace edit only; it must not write files.
+- `preview_rename` returns a sorted edit preview only; it must not write files.
+- Public `line` and `character` inputs and returned ranges are one-based.
+- Call `type_info` on value references when member discovery is desired.
 
 ## Public Tools
 
 `symbol_info`, `type_info`, `definition`, `type_definition`, `implementation`,
-`references`, `document_symbols`, `diagnostics`, `rename`, `list_environments`,
-and `restart_server`.
+`references`, `document_symbols`, `diagnostics`, `preview_rename`,
+`list_environments`, and `restart_server`.
 
 Navigation tools return `items` and `totalItems`. Paginated tools return
 `items`, `totalItems`, `offset`, `limit`, `hasMore`, and `nextOffset`. Errors
