@@ -180,6 +180,10 @@ edits.
 
 uv workspace members are routed to the enclosing [tool.uv.workspace] root so
 Pyright can use the shared workspace environment and dependencies.
+
+diagnostics applies output-only filtering for explicit member pyright
+report* overrides, such as reportMissingImports = "none", while keeping the
+single shared Pyright process for analysis, references, and rename previews.
 """,
 )
 

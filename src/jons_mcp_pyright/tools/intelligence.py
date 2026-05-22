@@ -8,6 +8,7 @@ from typing import Any
 from fastmcp import Context
 
 from ..constants import DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET, LSPMethods
+from ..diagnostic_filter import filter_diagnostics_by_member_config
 from ..exceptions import (
     DocumentSyncError,
     LSPRequestError,
@@ -326,6 +327,7 @@ async def diagnostics(
             for diag in diags:
                 all_diagnostics.append({**diag, "uri": uri})
 
+    all_diagnostics = filter_diagnostics_by_member_config(all_diagnostics, project_root)
     all_diagnostics.sort(key=diagnostic_sort_key)
     public_diagnostics = _diagnostic_items(all_diagnostics)
     paginated_items, metadata = apply_pagination(

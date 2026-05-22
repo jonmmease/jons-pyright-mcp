@@ -107,6 +107,14 @@ the Pyright environment so shared workspace dependencies and `.venv` settings
 resolve correctly. Virtual environments are detected from common names such as
 `.venv`, `venv`, `.env`, and Pixi environments under `.pixi/envs/<name>`.
 
+For uv workspaces, the public `diagnostics` tool also applies diagnostics-only
+output filtering from in-root member `pyrightconfig.json` or `[tool.pyright]`
+files. This honors explicit top-level `report*` overrides such as
+`reportMissingImports = "none"` for files under that member without splitting
+the workspace into separate Pyright processes. The filter affects returned MCP
+diagnostics only; Pyright analysis, readiness, references, and rename previews
+continue to use the shared workspace process.
+
 ## Prerequisites
 
 - Python 3.10 or newer.

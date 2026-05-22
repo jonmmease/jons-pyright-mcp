@@ -1,14 +1,97 @@
 """Focused tests for public diagnostics and rename preview behavior."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from test_mcp_tools import create_mock_client, setup_mock_manager
 
 from jons_mcp_pyright.constants import LSPMethods
-from jons_mcp_pyright.tools import preview_rename
+from jons_mcp_pyright.tools import diagnostics, preview_rename
 from jons_mcp_pyright.tools.intelligence import _normalize_rename_edits
+
+
+def _raw_diagnostic(uri: str, rule: str, message: str) -> dict[str, object]:
+    """Build a raw zero-based diagnostic as Pyright would publish it."""
+
+    return {
+        "uri": uri,
+        "message": message,
+        "severity": 1,
+        "code": rule,
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 1},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_filters_file_env_and_aggregate_modes(tmp_path: Path):
+    """Public diagnostics consistently apply member report-rule overrides."""
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "pyproject.toml").write_text(
+        '[tool.pyright]\nreportMissingImports = "none"\n'
+    )
+    file_path = package / "module.py"
+    file_path.write_text("import missing\n")
+    uri = file_path.resolve().as_uri()
+    raw_diagnostic = _raw_diagnostic(
+        uri,
+        "reportMissingImports",
+        "Import could not be resolved",
+    )
+
+    mock_client = create_mock_client()
+    mock_manager = setup_mock_manager(mock_client, tmp_path)
+    mock_manager.get_diagnostics_for_file = MagicMock(return_value=[raw_diagnostic])
+    mock_manager.get_diagnostics_for_environment = MagicMock(
+        return_value={uri: [raw_diagnostic]}
+    )
+    mock_manager.get_all_diagnostics = MagicMock(return_value={uri: [raw_diagnostic]})
+
+    file_result = await diagnostics(file_path="package/module.py")
+    env_result = await diagnostics(env_id=str(tmp_path))
+    aggregate_result = await diagnostics()
+
+    assert file_result["totalItems"] == 0
+    assert env_result["totalItems"] == 0
+    assert aggregate_result["totalItems"] == 0
+    assert raw_diagnostic["severity"] == 1
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_pagination_uses_filtered_totals(tmp_path: Path):
+    """Pagination metadata is computed after member diagnostic filtering."""
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pyright]\nreportMissingImports = "none"\n'
+    )
+    file_path = tmp_path / "module.py"
+    file_path.write_text("import missing\nx: int = 'wrong'\n")
+    uri = file_path.resolve().as_uri()
+    suppressed = _raw_diagnostic(
+        uri,
+        "reportMissingImports",
+        "Import could not be resolved",
+    )
+    kept = _raw_diagnostic(
+        uri,
+        "reportAssignmentType",
+        "Expression of type str cannot be assigned to int",
+    )
+
+    mock_client = create_mock_client()
+    mock_manager = setup_mock_manager(mock_client, tmp_path)
+    mock_manager.get_all_diagnostics = MagicMock(return_value={uri: [suppressed, kept]})
+
+    result = await diagnostics(limit=1)
+
+    assert result["totalItems"] == 1
+    assert result["hasMore"] is False
+    assert [item["message"] for item in result["items"]] == [kept["message"]]
 
 
 def test_preview_rename_normalizes_changes_and_sorts_one_based_ranges():
