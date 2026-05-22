@@ -158,9 +158,12 @@ discovery is desired.
 `references` and `preview_rename` are scoped to the active Pyright
 workspace/environment for the input file. `preview_rename` supplements Pyright's
 rename edit with reference locations from the same workspace so imported callers
-are included in the preview. In monorepos, callers that need results beyond that
-workspace should iterate environments or combine the preview with external
-search before applying edits.
+are included in the preview. By default, `preview_rename` also prewarms unopened
+Python files in the active environment before collecting references; tune this
+with `prewarm`, `prewarm_limit`, and `prewarm_timeout_seconds`. If prewarm is
+disabled or partial, the result includes `warnings`. In monorepos, callers that
+need results beyond the active workspace should iterate environments or combine
+the preview with external search before applying edits.
 
 Paginated tools return `items`, `totalItems`, `offset`, `limit`, `hasMore`, and
 `nextOffset`. Navigation tools return `items` and `totalItems`. Errors use a

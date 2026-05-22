@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from fastmcp import Context
 
 from ..constants import DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET, LSPMethods
 from ..diagnostic_filter import filter_diagnostics_by_member_config
+from ..environment import IGNORE_PATTERNS, get_venv_patterns
 from ..exceptions import (
     DocumentSyncError,
     LSPRequestError,
@@ -27,12 +31,25 @@ from ..utils import (
     diagnostic_sort_key,
     exception_to_tool_error,
     file_uri_to_path,
+    path_to_file_uri,
     public_position_to_lsp,
     resolve_project_file,
     tool_error,
 )
 
 logger = logging.getLogger(__name__)
+
+RENAME_PREWARM_FILE_SUFFIXES = {".py", ".pyi"}
+RENAME_PREWARM_DEFAULT_LIMIT = 2000
+RENAME_PREWARM_DEFAULT_TIMEOUT_SECONDS = 8.0
+
+
+@dataclass(frozen=True)
+class RenamePrewarmCandidates:
+    """Ordered candidate files and skipped-path count for rename prewarm."""
+
+    paths: list[Path]
+    skipped: int = 0
 
 
 def _range_to_public(range_value: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -121,7 +138,11 @@ def _rename_edit_identity(
     )
 
 
-def _rename_preview_from_edit_items(edits: list[dict[str, Any]]) -> dict[str, Any]:
+def _rename_preview_from_edit_items(
+    edits: list[dict[str, Any]],
+    *,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
     """Validate, deduplicate, and sort public rename preview edits."""
     deduped: list[dict[str, Any]] = []
     seen: set[tuple[str, int, int, int, int, str]] = set()
@@ -134,7 +155,13 @@ def _rename_preview_from_edit_items(edits: list[dict[str, Any]]) -> dict[str, An
 
     deduped.sort(key=_text_edit_sort_key)
     validated = [RenamePreviewEdit.model_validate(edit) for edit in deduped]
-    return dump_model(RenamePreviewResult(edits=validated, totalEdits=len(validated)))
+    return dump_model(
+        RenamePreviewResult(
+            edits=validated,
+            totalEdits=len(validated),
+            warnings=warnings or None,
+        )
+    )
 
 
 def _workspace_edit_to_public_edits(workspace_edit: Any) -> list[dict[str, Any]]:
@@ -239,8 +266,244 @@ async def _reference_tool_edits_to_rename_edits(
     ]
 
 
+def _prepare_rename_range(prepare_result: Any) -> dict[str, Any] | None:
+    """Extract an LSP range from a prepareRename response when available."""
+    if not isinstance(prepare_result, dict):
+        return None
+    if "start" in prepare_result and "end" in prepare_result:
+        return prepare_result
+    range_value = prepare_result.get("range")
+    return range_value if isinstance(range_value, dict) else None
+
+
+def _identifier_at_position(line_text: str, character: int) -> str | None:
+    """Extract a Python-like identifier around a zero-based character."""
+    if not line_text:
+        return None
+    index = min(max(character, 0), max(len(line_text) - 1, 0))
+    if not (line_text[index].isalnum() or line_text[index] == "_"):
+        index = max(index - 1, 0)
+    if not (line_text[index].isalnum() or line_text[index] == "_"):
+        return None
+
+    start = index
+    while start > 0 and (line_text[start - 1].isalnum() or line_text[start - 1] == "_"):
+        start -= 1
+    end = index + 1
+    while end < len(line_text) and (line_text[end].isalnum() or line_text[end] == "_"):
+        end += 1
+
+    identifier = line_text[start:end]
+    return identifier or None
+
+
+def _old_symbol_text(
+    file_path: Path,
+    prepare_result: Any,
+    position: dict[str, int],
+) -> str | None:
+    """Best-effort old symbol text for prewarm candidate prioritization."""
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    range_value = _prepare_rename_range(prepare_result)
+    if range_value:
+        start = range_value.get("start") or {}
+        end = range_value.get("end") or {}
+        start_line = int(start.get("line", -1))
+        end_line = int(end.get("line", -1))
+        if start_line == end_line and 0 <= start_line < len(lines):
+            start_char = max(0, int(start.get("character", 0)))
+            end_char = max(start_char, int(end.get("character", start_char)))
+            symbol = lines[start_line][start_char:end_char].strip()
+            if symbol:
+                return symbol
+
+    line_index = position.get("line", 0)
+    if 0 <= line_index < len(lines):
+        return _identifier_at_position(lines[line_index], position.get("character", 0))
+    return None
+
+
+def _is_ignored_prewarm_dir(path: Path, ignored_names: set[str]) -> bool:
+    """Return True when a directory should be skipped during prewarm discovery."""
+    return path.name in ignored_names or path.name.endswith(".egg-info")
+
+
+def _discover_python_files(root: Path) -> tuple[list[Path], int]:
+    """Discover root-bound Python files while pruning ignored directories."""
+    root = root.resolve()
+    ignored_names = IGNORE_PATTERNS | set(get_venv_patterns())
+    discovered: list[Path] = []
+    skipped = 0
+    stack = [root]
+
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = sorted(directory.iterdir(), key=lambda entry: entry.name)
+        except OSError:
+            skipped += 1
+            continue
+
+        for entry in entries:
+            if entry.is_symlink():
+                skipped += 1
+                continue
+            if entry.is_dir():
+                if _is_ignored_prewarm_dir(entry, ignored_names):
+                    continue
+                stack.append(entry)
+                continue
+            if entry.suffix not in RENAME_PREWARM_FILE_SUFFIXES:
+                continue
+
+            try:
+                resolved = entry.resolve(strict=True)
+                resolved.relative_to(root)
+            except (OSError, ValueError):
+                skipped += 1
+                continue
+            if resolved.is_file():
+                discovered.append(resolved)
+            else:
+                skipped += 1
+
+    return sorted(discovered), skipped
+
+
+def _rename_prewarm_candidates(
+    root: Path, old_symbol: str | None
+) -> RenamePrewarmCandidates:
+    """Return Python files ordered by likelihood of containing rename references."""
+    candidates, skipped = _discover_python_files(root)
+    if not old_symbol:
+        return RenamePrewarmCandidates(paths=candidates, skipped=skipped)
+
+    matching: list[Path] = []
+    remaining: list[Path] = []
+    for candidate in candidates:
+        try:
+            content = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            skipped += 1
+            continue
+        if old_symbol in content:
+            matching.append(candidate)
+        else:
+            remaining.append(candidate)
+
+    return RenamePrewarmCandidates(
+        paths=matching + remaining,
+        skipped=skipped,
+    )
+
+
+async def _prewarm_rename_workspace(
+    client: Any,
+    target_path: Path,
+    target_uri: str,
+    old_symbol: str | None,
+    *,
+    prewarm: bool,
+    prewarm_limit: int,
+    prewarm_timeout_seconds: float,
+) -> list[str]:
+    """Open and lightly inspect candidate files so Pyright indexes callers."""
+    if not prewarm:
+        return ["Prewarm was disabled; unopened files may be missed."]
+    if prewarm_limit <= 0:
+        return ["Prewarm limit was 0; unopened files may be missed."]
+    if prewarm_timeout_seconds <= 0:
+        return ["Prewarm timeout was 0; unopened files may be missed."]
+
+    from ..server import get_manager
+
+    mgr = get_manager()
+    env = mgr.get_environment_for_file(str(target_path))
+    if not env:
+        return [
+            "Could not determine the active Pyright environment; "
+            "unopened files may be missed."
+        ]
+
+    candidate_result = _rename_prewarm_candidates(env.project_root, old_symbol)
+    candidates = [
+        path
+        for path in candidate_result.paths
+        if path != target_path
+        and not mgr.is_file_opened(str(path), path_to_file_uri(path))
+    ]
+
+    warnings: list[str] = []
+    skipped = candidate_result.skipped
+    if len(candidates) > prewarm_limit:
+        warnings.append(
+            f"Prewarm hit the file limit ({prewarm_limit}); unopened files may be missed."
+        )
+    deadline = time.monotonic() + prewarm_timeout_seconds
+    warmed = 0
+    timed_out = False
+
+    for candidate in candidates[:prewarm_limit]:
+        if time.monotonic() >= deadline:
+            timed_out = True
+            break
+
+        candidate_uri = path_to_file_uri(candidate)
+        try:
+            sync_error = await _sync_file(
+                client,
+                str(candidate),
+                candidate_uri,
+                wait_for_diagnostics=False,
+            )
+        except Exception as exc:
+            skipped += 1
+            logger.debug("Prewarm sync failed for %s: %s", candidate_uri, exc)
+            continue
+        if sync_error:
+            skipped += 1
+            continue
+
+        try:
+            await client.request(
+                LSPMethods.DOCUMENT_SYMBOL,
+                {"textDocument": {"uri": candidate_uri}},
+            )
+            warmed += 1
+        except Exception as exc:
+            skipped += 1
+            logger.debug("Prewarm documentSymbol failed for %s: %s", candidate_uri, exc)
+
+    if timed_out:
+        warnings.append(
+            f"Prewarm timed out after {prewarm_timeout_seconds:g}s; results may be incomplete."
+        )
+    if skipped:
+        warnings.append(f"Prewarm skipped {skipped} unsafe or unreadable path(s).")
+    if not warmed and candidates:
+        warnings.append(
+            "Prewarm did not warm any candidate files; unopened files may be missed."
+        )
+
+    logger.debug(
+        "Rename prewarm completed for %s: warmed=%s candidates=%s skipped=%s",
+        target_uri,
+        warmed,
+        len(candidates),
+        skipped,
+    )
+    return warnings
+
+
 def _normalize_rename_edits(
-    workspace_edit: Any, supplemental_edits: list[dict[str, Any]] | None = None
+    workspace_edit: Any,
+    supplemental_edits: list[dict[str, Any]] | None = None,
+    *,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Normalize WorkspaceEdit plus optional supplemental edits to preview edits."""
     try:
@@ -252,7 +515,7 @@ def _normalize_rename_edits(
     if supplemental_edits:
         edits.extend(supplemental_edits)
 
-    return _rename_preview_from_edit_items(edits)
+    return _rename_preview_from_edit_items(edits, warnings=warnings)
 
 
 async def diagnostics(
@@ -369,6 +632,9 @@ async def preview_rename(
     line: int,
     character: int,
     new_name: str,
+    prewarm: bool = True,
+    prewarm_limit: int = RENAME_PREWARM_DEFAULT_LIMIT,
+    prewarm_timeout_seconds: float = RENAME_PREWARM_DEFAULT_TIMEOUT_SECONDS,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Preview workspace-aware rename edits without writing files."""
@@ -410,6 +676,16 @@ async def preview_rename(
     if not prepare_result:
         return tool_error("rename_not_available", "Cannot rename at this position")
 
+    prewarm_warnings = await _prewarm_rename_workspace(
+        client,
+        resolved.path,
+        resolved.uri,
+        _old_symbol_text(resolved.path, prepare_result, position),
+        prewarm=prewarm,
+        prewarm_limit=prewarm_limit,
+        prewarm_timeout_seconds=prewarm_timeout_seconds,
+    )
+
     try:
         result = await client.request(
             LSPMethods.RENAME,
@@ -434,4 +710,5 @@ async def preview_rename(
     return _normalize_rename_edits(
         result,
         supplemental_edits=supplemental_edits_result,
+        warnings=prewarm_warnings,
     )

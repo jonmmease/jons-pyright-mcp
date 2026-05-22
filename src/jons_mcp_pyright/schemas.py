@@ -144,6 +144,7 @@ class RenamePreviewResult(StrictModel):
 
     edits: list[RenamePreviewEdit]
     totalEdits: int
+    warnings: list[str] | None = None
 
 
 class EnvironmentItem(StrictModel):

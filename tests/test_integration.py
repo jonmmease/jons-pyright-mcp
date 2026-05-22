@@ -141,26 +141,47 @@ another = old_function()
 
     @pytest.mark.asyncio
     async def test_preview_rename_includes_imported_references(self, tmp_path: Path):
-        """Rename preview should include references Pyright can find across files."""
+        """Cold uv workspace rename preview should prewarm cross-package callers."""
         has_pyright = importlib.util.find_spec("pyright") is not None
         if not has_pyright and not shutil.which("pyright-langserver"):
             pytest.skip("pyright not found")
 
         (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "rename-project"\nversion = "0.1.0"\n'
+            "\n".join(
+                [
+                    "[project]",
+                    'name = "rename-workspace"',
+                    'version = "0.1.0"',
+                    "[tool.uv.workspace]",
+                    'members = ["pkg-a", "pkg-b"]',
+                ]
+            )
         )
         (tmp_path / "pyrightconfig.json").write_text(
-            '{"include": ["src"], "extraPaths": ["."], "typeCheckingMode": "basic"}'
+            '{"include": ["pkg-a/src", "pkg-b/src"], '
+            '"extraPaths": ["pkg-a/src", "pkg-b/src"], '
+            '"typeCheckingMode": "basic"}'
         )
-        src_dir = tmp_path / "src"
-        src_dir.mkdir()
-        (src_dir / "__init__.py").write_text("")
-        provider_file = src_dir / "provider.py"
-        consumer_file = src_dir / "consumer.py"
+
+        pkg_a = tmp_path / "pkg-a"
+        pkg_b = tmp_path / "pkg-b"
+        pkg_a_src = pkg_a / "src" / "pkg_a"
+        pkg_b_src = pkg_b / "src" / "pkg_b"
+        pkg_a_src.mkdir(parents=True)
+        pkg_b_src.mkdir(parents=True)
+        (pkg_a / "pyproject.toml").write_text(
+            '[project]\nname = "pkg-a"\nversion = "0.1.0"\n'
+        )
+        (pkg_b / "pyproject.toml").write_text(
+            '[project]\nname = "pkg-b"\nversion = "0.1.0"\n'
+        )
+
+        init_file = pkg_a_src / "__init__.py"
+        provider_file = pkg_a_src / "provider.py"
+        consumer_file = pkg_b_src / "consumer.py"
+        init_file.write_text("from .provider import query_sql\n")
         provider_file.write_text("def query_sql() -> int:\n    return 1\n")
-        consumer_file.write_text(
-            "from .provider import query_sql\n\nvalue = query_sql()\n"
-        )
+        consumer_file.write_text("from pkg_a import query_sql\n\nvalue = query_sql()\n")
 
         manager = PyrightClientManager(tmp_path)
         try:
@@ -168,14 +189,6 @@ another = old_function()
             server_module.manager = manager
             server_module.initialization_complete = True
             await asyncio.sleep(1.5)
-
-            definition_result = await definition(
-                file_path=str(consumer_file),
-                line=1,
-                character=23,
-                ctx=None,
-            )
-            assert definition_result["totalItems"] > 0
 
             result = await preview_rename(
                 file_path=str(provider_file),
@@ -187,10 +200,12 @@ another = old_function()
 
             if "error" not in result:
                 consumer_uri = consumer_file.resolve().as_uri()
+                init_uri = init_file.resolve().as_uri()
                 assert any(
                     edit["uri"] == consumer_uri for edit in result["edits"]
                 ), result
-                assert result["totalEdits"] >= 2
+                assert any(edit["uri"] == init_uri for edit in result["edits"]), result
+                assert result["totalEdits"] >= 3
         finally:
             server_module.initialization_complete = False
             await manager.shutdown_all()

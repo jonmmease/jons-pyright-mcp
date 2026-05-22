@@ -8,7 +8,10 @@ from test_mcp_tools import create_mock_client, setup_mock_manager
 
 from jons_mcp_pyright.constants import LSPMethods
 from jons_mcp_pyright.tools import diagnostics, preview_rename
-from jons_mcp_pyright.tools.intelligence import _normalize_rename_edits
+from jons_mcp_pyright.tools.intelligence import (
+    _normalize_rename_edits,
+    _rename_prewarm_candidates,
+)
 
 
 def _raw_diagnostic(uri: str, rule: str, message: str) -> dict[str, object]:
@@ -175,6 +178,31 @@ def test_preview_rename_rejects_resource_operations():
     assert result["error"]["code"] == "rename_unsupported_edit_shape"
 
 
+def test_prewarm_candidates_prioritize_symbol_and_skip_ignored_paths(tmp_path: Path):
+    """Prewarm discovery keeps likely symbol files first and skips unsafe paths."""
+    matching_file = tmp_path / "b_match.py"
+    other_file = tmp_path / "a_other.py"
+    matching_file.write_text("query_sql()\n")
+    other_file.write_text("value = 1\n")
+
+    venv_dir = tmp_path / ".venv"
+    venv_dir.mkdir()
+    (venv_dir / "ignored.py").write_text("query_sql()\n")
+
+    outside_file = tmp_path.parent / "outside.py"
+    outside_file.write_text("query_sql()\n")
+    (tmp_path / "linked.py").symlink_to(outside_file)
+
+    invalid_file = tmp_path / "invalid.py"
+    invalid_file.write_bytes(b"\xff\xfe")
+
+    result = _rename_prewarm_candidates(tmp_path, "query_sql")
+
+    assert result.paths[:2] == [matching_file.resolve(), other_file.resolve()]
+    assert venv_dir / "ignored.py" not in result.paths
+    assert result.skipped >= 2
+
+
 @pytest.mark.asyncio
 async def test_preview_rename_does_not_write_files(tmp_path: Path):
     """Previewing a rename returns edits while leaving disk content unchanged."""
@@ -208,10 +236,165 @@ async def test_preview_rename_does_not_write_files(tmp_path: Path):
         line=1,
         character=1,
         new_name="new_name",
+        prewarm=False,
     )
 
     assert result["totalEdits"] == 1
     assert test_file.read_text() == "old_name = 1\nprint(old_name)\n"
+
+
+@pytest.mark.asyncio
+async def test_preview_rename_prewarms_candidates_before_rename(tmp_path: Path):
+    """Cold rename previews open likely callers before rename and references."""
+    declaration_file = tmp_path / "provider.py"
+    caller_file = tmp_path / "consumer.py"
+    declaration_file.write_text("def query_sql():\n    pass\n")
+    caller_file.write_text("from provider import query_sql\nquery_sql()\n")
+
+    declaration_uri = declaration_file.resolve().as_uri()
+    caller_uri = caller_file.resolve().as_uri()
+
+    mock_client = create_mock_client()
+    mock_client.request = AsyncMock(
+        side_effect=[
+            {
+                "range": {
+                    "start": {"line": 0, "character": 4},
+                    "end": {"line": 0, "character": 13},
+                }
+            },
+            [],
+            [],
+            {
+                "changes": {
+                    declaration_uri: [
+                        {
+                            "range": {
+                                "start": {"line": 0, "character": 4},
+                                "end": {"line": 0, "character": 13},
+                            },
+                            "newText": "renamed_query_sql",
+                        }
+                    ]
+                }
+            },
+            [
+                {
+                    "uri": declaration_uri,
+                    "range": {
+                        "start": {"line": 0, "character": 4},
+                        "end": {"line": 0, "character": 13},
+                    },
+                },
+                {
+                    "uri": caller_uri,
+                    "range": {
+                        "start": {"line": 0, "character": 21},
+                        "end": {"line": 0, "character": 30},
+                    },
+                },
+            ],
+        ]
+    )
+    mock_manager = setup_mock_manager(mock_client, tmp_path)
+    mock_env = mock_manager.get_environment_for_file.return_value
+
+    def mark_opened(_file_path: str, uri: str, version: int = 1) -> None:
+        mock_env.opened_files.add(uri)
+        mock_env.doc_versions[uri] = version
+
+    mock_manager.mark_file_opened.side_effect = mark_opened
+
+    result = await preview_rename(
+        file_path="provider.py",
+        line=1,
+        character=5,
+        new_name="renamed_query_sql",
+    )
+
+    requested_methods = [call.args[0] for call in mock_client.request.await_args_list]
+    assert requested_methods == [
+        LSPMethods.PREPARE_RENAME,
+        LSPMethods.DOCUMENT_SYMBOL,
+        LSPMethods.DOCUMENT_SYMBOL,
+        LSPMethods.RENAME,
+        LSPMethods.REFERENCES,
+    ]
+    assert result["totalEdits"] == 2
+    assert "warnings" not in result
+    assert caller_uri in mock_env.opened_files
+
+
+@pytest.mark.asyncio
+async def test_preview_rename_limit_zero_warns_and_skips_prewarm(tmp_path: Path):
+    """A zero prewarm limit warns without issuing documentSymbol warm-up calls."""
+    test_file = tmp_path / "test.py"
+    test_file.write_text("old_name = 1\nprint(old_name)\n")
+    uri = test_file.resolve().as_uri()
+
+    mock_client = create_mock_client()
+    mock_client.request = AsyncMock(
+        side_effect=[
+            {
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 8},
+                }
+            },
+            {
+                "changes": {
+                    uri: [
+                        {
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 0, "character": 8},
+                            },
+                            "newText": "new_name",
+                        }
+                    ]
+                }
+            },
+            [],
+        ]
+    )
+    setup_mock_manager(mock_client, tmp_path)
+
+    result = await preview_rename(
+        file_path="test.py",
+        line=1,
+        character=1,
+        new_name="new_name",
+        prewarm_limit=0,
+    )
+
+    requested_methods = [call.args[0] for call in mock_client.request.await_args_list]
+    assert requested_methods == [
+        LSPMethods.PREPARE_RENAME,
+        LSPMethods.RENAME,
+        LSPMethods.REFERENCES,
+    ]
+    assert result["warnings"] == ["Prewarm limit was 0; unopened files may be missed."]
+
+
+@pytest.mark.asyncio
+async def test_preview_rename_unavailable_skips_prewarm(tmp_path: Path):
+    """prepareRename failure/unavailability stops before prewarm side effects."""
+    test_file = tmp_path / "test.py"
+    test_file.write_text("old_name = 1\n")
+
+    mock_client = create_mock_client()
+    mock_client.request = AsyncMock(return_value=None)
+    setup_mock_manager(mock_client, tmp_path)
+
+    result = await preview_rename(
+        file_path="test.py",
+        line=1,
+        character=1,
+        new_name="new_name",
+    )
+
+    assert result["error"]["code"] == "rename_not_available"
+    mock_client.request.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -279,6 +462,7 @@ async def test_preview_rename_supplements_missing_reference_edits(tmp_path: Path
         line=1,
         character=5,
         new_name="renamed_query_sql",
+        prewarm=False,
     )
 
     assert result == {
@@ -309,6 +493,7 @@ async def test_preview_rename_supplements_missing_reference_edits(tmp_path: Path
             },
         ],
         "totalEdits": 3,
+        "warnings": ["Prewarm was disabled; unopened files may be missed."],
     }
     assert declaration_file.read_text() == "def query_sql():\n    pass\n"
     assert caller_file.read_text() == "from provider import query_sql\nquery_sql()\n"

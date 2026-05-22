@@ -184,6 +184,10 @@ Pyright can use the shared workspace environment and dependencies.
 diagnostics applies output-only filtering for explicit member pyright
 report* overrides, such as reportMissingImports = "none", while keeping the
 single shared Pyright process for analysis, references, and rename previews.
+
+preview_rename prewarms unopened Python files in the active environment by
+default before collecting references. Tune this with prewarm, prewarm_limit,
+and prewarm_timeout_seconds; check warnings when prewarm is disabled or partial.
 """,
 )
 

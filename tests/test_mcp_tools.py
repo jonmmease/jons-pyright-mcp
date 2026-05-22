@@ -516,6 +516,7 @@ class TestCodeIntelligence:
             line=11,
             character=6,
             new_name="new_name",
+            prewarm=False,
             ctx=mock_ctx,
         )
 
@@ -531,6 +532,7 @@ class TestCodeIntelligence:
                 }
             ],
             "totalEdits": 1,
+            "warnings": ["Prewarm was disabled; unopened files may be missed."],
         }
 
     @pytest.mark.asyncio

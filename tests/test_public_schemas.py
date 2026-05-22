@@ -4,6 +4,7 @@ from pydantic import ValidationError
 
 from jons_mcp_pyright.schemas import (
     NavigationResult,
+    RenamePreviewResult,
     SymbolInfoResult,
     ToolErrorResult,
 )
@@ -95,6 +96,19 @@ def test_public_schema_extra_fields_are_rejected():
         assert "Extra inputs are not permitted" in str(exc)
     else:
         raise AssertionError("expected strict schema validation to fail")
+
+
+def test_rename_preview_allows_optional_warnings():
+    """Rename preview warnings are part of the strict public schema."""
+    result = RenamePreviewResult.model_validate(
+        {
+            "edits": [],
+            "totalEdits": 0,
+            "warnings": ["Prewarm was partial."],
+        }
+    )
+
+    assert result.warnings == ["Prewarm was partial."]
 
 
 def test_tool_error_matches_public_error_schema():
