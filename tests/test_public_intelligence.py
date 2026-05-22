@@ -185,7 +185,6 @@ async def test_preview_rename_does_not_write_files(tmp_path: Path):
     mock_client.request = AsyncMock(
         side_effect=[
             {"range": {"start": {"line": 0, "character": 0}}},
-            [],
             {
                 "changes": {
                     test_file.resolve().as_uri(): [
@@ -199,6 +198,7 @@ async def test_preview_rename_does_not_write_files(tmp_path: Path):
                     ]
                 }
             },
+            [],
         ]
     )
     setup_mock_manager(mock_client, tmp_path)
@@ -234,6 +234,19 @@ async def test_preview_rename_supplements_missing_reference_edits(tmp_path: Path
                     "end": {"line": 0, "character": 13},
                 }
             },
+            {
+                "changes": {
+                    declaration_uri: [
+                        {
+                            "range": {
+                                "start": {"line": 0, "character": 4},
+                                "end": {"line": 0, "character": 13},
+                            },
+                            "newText": "renamed_query_sql",
+                        }
+                    ]
+                }
+            },
             [
                 {
                     "uri": declaration_uri,
@@ -257,19 +270,6 @@ async def test_preview_rename_supplements_missing_reference_edits(tmp_path: Path
                     },
                 },
             ],
-            {
-                "changes": {
-                    declaration_uri: [
-                        {
-                            "range": {
-                                "start": {"line": 0, "character": 4},
-                                "end": {"line": 0, "character": 13},
-                            },
-                            "newText": "renamed_query_sql",
-                        }
-                    ]
-                }
-            },
         ]
     )
     setup_mock_manager(mock_client, tmp_path)
@@ -315,6 +315,6 @@ async def test_preview_rename_supplements_missing_reference_edits(tmp_path: Path
     requested_methods = [call.args[0] for call in mock_client.request.await_args_list]
     assert requested_methods == [
         LSPMethods.PREPARE_RENAME,
-        LSPMethods.REFERENCES,
         LSPMethods.RENAME,
+        LSPMethods.REFERENCES,
     ]

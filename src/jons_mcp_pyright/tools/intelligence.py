@@ -27,7 +27,6 @@ from ..utils import (
     diagnostic_sort_key,
     exception_to_tool_error,
     file_uri_to_path,
-    locations_to_items,
     public_position_to_lsp,
     resolve_project_file,
     tool_error,
@@ -209,13 +208,34 @@ def _workspace_edit_to_public_edits(workspace_edit: Any) -> list[dict[str, Any]]
     return edits
 
 
-def _reference_locations_to_rename_edits(
-    references_response: Any, new_name: str
-) -> list[dict[str, Any]]:
-    """Convert reference locations into public rename preview edits."""
+async def _reference_tool_edits_to_rename_edits(
+    file_path: str,
+    line: int,
+    character: int,
+    new_name: str,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """Use the public references path to backfill rename preview edits."""
+    from .language import references
+
+    references_result = await references(
+        file_path=file_path,
+        line=line,
+        character=character,
+        include_declaration=True,
+        limit=100_000,
+        offset=0,
+        ctx=None,
+    )
+    if "error" in references_result:
+        return references_result
+
     return [
-        {"uri": item["uri"], "range": item["range"], "newText": new_name}
-        for item in locations_to_items(references_response)
+        {
+            "uri": item["uri"],
+            "range": item["range"],
+            "newText": new_name,
+        }
+        for item in references_result.get("items", [])
     ]
 
 
@@ -391,18 +411,6 @@ async def preview_rename(
         return tool_error("rename_not_available", "Cannot rename at this position")
 
     try:
-        references_result = await client.request(
-            LSPMethods.REFERENCES,
-            {
-                "textDocument": {"uri": resolved.uri},
-                "position": position,
-                "context": {"includeDeclaration": True},
-            },
-        )
-    except LSPRequestError as exc:
-        return exception_to_tool_error(exc)
-
-    try:
         result = await client.request(
             LSPMethods.RENAME,
             {
@@ -414,7 +422,16 @@ async def preview_rename(
     except LSPRequestError as exc:
         return exception_to_tool_error(exc)
 
-    supplemental_edits = _reference_locations_to_rename_edits(
-        references_result, new_name
+    supplemental_edits_result = await _reference_tool_edits_to_rename_edits(
+        file_path,
+        line,
+        character,
+        new_name,
     )
-    return _normalize_rename_edits(result, supplemental_edits=supplemental_edits)
+    if isinstance(supplemental_edits_result, dict):
+        return supplemental_edits_result
+
+    return _normalize_rename_edits(
+        result,
+        supplemental_edits=supplemental_edits_result,
+    )
