@@ -460,43 +460,6 @@ async def type_definition(
     return navigation_result(response)
 
 
-async def implementation(
-    file_path: str,
-    line: int,
-    character: int,
-    ctx: Context | None = None,
-) -> dict[str, Any]:
-    """Find implementations at a one-based public position."""
-    try:
-        client, resolved = await _resolve_client_and_file(file_path)
-    except PyrightNotInitializedError as exc:
-        return _not_initialized_error(exc)
-    except (PathValidationError, ValueError) as exc:
-        return exception_to_tool_error(exc)
-
-    if ctx:
-        await ctx.info(
-            f"Finding implementations at {resolved.display_path}:{line}:{character}"
-        )
-
-    sync_error = await _sync_file(client, resolved, wait_for_diagnostics=True)
-    if sync_error:
-        return sync_error
-
-    try:
-        response = await client.request(
-            LSPMethods.IMPLEMENTATION,
-            {
-                "textDocument": {"uri": resolved.uri},
-                "position": public_position_to_lsp(line, character),
-            },
-        )
-    except LSPRequestError as exc:
-        return exception_to_tool_error(exc)
-
-    return navigation_result(response)
-
-
 async def references(
     file_path: str,
     line: int,

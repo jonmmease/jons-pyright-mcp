@@ -68,12 +68,16 @@ src/jons_mcp_pyright/
 - `preview_rename` returns a sorted edit preview only; it must not write files.
 - Public `line` and `character` inputs and returned ranges are one-based.
 - Call `type_info` on value references when member discovery is desired.
+- `references` and `preview_rename` are scoped to the active Pyright
+  environment for the input file, not every environment in a monorepo.
+- Discovered uv workspace member projects should route to the enclosing
+  `[tool.uv.workspace]` root so shared workspace dependencies resolve.
 
 ## Public Tools
 
-`symbol_info`, `type_info`, `definition`, `type_definition`, `implementation`,
-`references`, `document_symbols`, `diagnostics`, `preview_rename`,
-`list_environments`, and `restart_server`.
+`symbol_info`, `type_info`, `definition`, `type_definition`, `references`,
+`document_symbols`, `diagnostics`, `preview_rename`, `list_environments`, and
+`restart_server`.
 
 Navigation tools return `items` and `totalItems`. Paginated tools return
 `items`, `totalItems`, `offset`, `limit`, `hasMore`, and `nextOffset`. Errors

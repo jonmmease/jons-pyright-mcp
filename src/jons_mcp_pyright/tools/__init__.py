@@ -5,7 +5,6 @@ from .intelligence import diagnostics, preview_rename
 from .language import (
     definition,
     document_symbols,
-    implementation,
     references,
     symbol_info,
     type_definition,
@@ -18,7 +17,6 @@ __all__ = [
     "type_info",
     "definition",
     "type_definition",
-    "implementation",
     "references",
     "document_symbols",
     # Intelligence tools

@@ -119,6 +119,36 @@ class TestReadPyrightConfig:
 
         assert config == {}
 
+    def test_reads_pyright_config_from_pyproject(self, tmp_path):
+        """Should read [tool.pyright] when pyrightconfig.json is absent."""
+        (tmp_path / "pyproject.toml").write_text("""
+[project]
+name = "test"
+
+[tool.pyright]
+typeCheckingMode = "off"
+reportMissingImports = "none"
+""")
+
+        config = read_pyright_config(tmp_path)
+
+        assert config == {
+            "typeCheckingMode": "off",
+            "reportMissingImports": "none",
+        }
+
+    def test_pyrightconfig_takes_precedence_over_pyproject(self, tmp_path):
+        """Should prefer pyrightconfig.json over [tool.pyright]."""
+        (tmp_path / "pyproject.toml").write_text("""
+[tool.pyright]
+typeCheckingMode = "off"
+""")
+        (tmp_path / "pyrightconfig.json").write_text('{"typeCheckingMode": "strict"}')
+
+        config = read_pyright_config(tmp_path)
+
+        assert config == {"typeCheckingMode": "strict"}
+
 
 class TestDiscoverProjectRoots:
     """Tests for discover_project_roots function."""
@@ -178,6 +208,36 @@ class TestDiscoverProjectRoots:
         roots = discover_project_roots(tmp_path)
 
         assert node_pkg not in roots
+
+    def test_ignores_virtualenv_internals(self, tmp_path):
+        """Should ignore project markers inside virtual environments."""
+        venv_pkg = tmp_path / ".venv" / "src" / "sqlparse"
+        venv_pkg.mkdir(parents=True)
+        (venv_pkg / "pyproject.toml").write_text("[project]\nname = 'bad'")
+
+        roots = discover_project_roots(tmp_path)
+
+        assert venv_pkg not in roots
+
+    def test_ignores_pixi_environment_internals(self, tmp_path):
+        """Should ignore project markers inside pixi environments."""
+        pixi_pkg = tmp_path / ".pixi" / "envs" / "default" / "src" / "pandas"
+        pixi_pkg.mkdir(parents=True)
+        (pixi_pkg / "pyproject.toml").write_text("[project]\nname = 'bad'")
+
+        roots = discover_project_roots(tmp_path)
+
+        assert pixi_pkg not in roots
+
+    def test_ignores_site_packages(self, tmp_path):
+        """Should ignore installed dependency package metadata."""
+        installed_pkg = tmp_path / "lib" / "python3.12" / "site-packages" / "some_dep"
+        installed_pkg.mkdir(parents=True)
+        (installed_pkg / "pyproject.toml").write_text("[project]\nname = 'bad'")
+
+        roots = discover_project_roots(tmp_path)
+
+        assert installed_pkg not in roots
 
     def test_ignores_pycache(self, tmp_path):
         """Should ignore __pycache__ directories."""
@@ -468,6 +528,58 @@ class TestDiscoverEnvironments:
         envs = discover_environments(tmp_path)
 
         assert envs[0].config == {"typeCheckingMode": "strict"}
+
+    def test_uv_workspace_members_use_workspace_environment(self, tmp_path):
+        """Should collapse uv workspace member projects to the workspace root."""
+        (tmp_path / "pyproject.toml").write_text("""
+[project]
+name = "workspace"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+""")
+        pkg_a = tmp_path / "packages" / "pkg-a"
+        pkg_a.mkdir(parents=True)
+        (pkg_a / "pyproject.toml").write_text("[project]\nname = 'pkg-a'")
+        pkg_file = pkg_a / "src" / "pkg_a" / "__init__.py"
+        pkg_file.parent.mkdir(parents=True)
+        pkg_file.write_text("")
+
+        envs = discover_environments(tmp_path)
+
+        assert [env.project_root for env in envs] == [tmp_path]
+        assert get_environment_for_file(pkg_file, envs) == envs[0]
+
+    def test_nested_uv_workspace_inside_root_becomes_environment(self, tmp_path):
+        """Should use a nested uv workspace root instead of its member packages."""
+        python_root = tmp_path / "python"
+        hextoolkit = python_root / "hextoolkit"
+        hextoolkit.mkdir(parents=True)
+        (python_root / "pyproject.toml").write_text("""
+[project]
+name = "hex-python"
+
+[tool.uv.workspace]
+members = ["hextoolkit"]
+""")
+        (hextoolkit / "pyproject.toml").write_text("""
+[project]
+name = "hextoolkit"
+dependencies = ["hex-data-service"]
+
+[tool.pyright]
+reportMissingImports = "none"
+""")
+        source_file = hextoolkit / "hextoolkit" / "hex_data_connection.py"
+        source_file.parent.mkdir()
+        source_file.write_text("")
+
+        envs = discover_environments(tmp_path)
+        env_by_root = {env.project_root: env for env in envs}
+
+        assert python_root in env_by_root
+        assert hextoolkit not in env_by_root
+        assert get_environment_for_file(source_file, envs) == env_by_root[python_root]
 
 
 class TestGetEnvironmentForFile:

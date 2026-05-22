@@ -52,11 +52,15 @@ uv build --wheel --out-dir /tmp/jons-mcp-pyright-wheel
 - Public `line` and `character` inputs and returned ranges are one-based.
 - `preview_rename` returns a sorted edit preview and does not write files.
 - Call `type_info` on value references when member discovery is desired.
+- `references` and `preview_rename` are scoped to the active Pyright
+  environment for the input file, not every environment in a monorepo.
+- Discovered uv workspace member projects should route to the enclosing
+  `[tool.uv.workspace]` root so shared workspace dependencies resolve.
 
 ## MCP Tools
 
-`symbol_info`, `type_info`, `definition`, `type_definition`, `implementation`,
-`references`, `document_symbols`, `diagnostics`, `preview_rename`,
-`list_environments`, and `restart_server`.
+`symbol_info`, `type_info`, `definition`, `type_definition`, `references`,
+`document_symbols`, `diagnostics`, `preview_rename`, `list_environments`, and
+`restart_server`.
 
 Tool errors use `error.code`, `error.message`, and `error.retryable`.

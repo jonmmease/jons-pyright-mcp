@@ -21,20 +21,6 @@ from .exceptions import LSPRequestError, PyrightNotFoundError
 logger = logging.getLogger(__name__)
 
 
-def read_pyright_config(project_root: Path) -> dict[str, Any]:
-    """Read pyrightconfig.json if it exists."""
-    config_path = project_root / "pyrightconfig.json"
-    if config_path.exists():
-        try:
-            with open(config_path) as f:
-                config = json.load(f)
-                logger.info(f"Loaded pyrightconfig.json: {config}")
-                return cast(dict[str, Any], config)
-        except Exception as e:
-            logger.warning(f"Failed to read pyrightconfig.json: {e}")
-    return {}
-
-
 def get_python_interpreter(project_root: Path, config: dict[str, Any]) -> str | None:
     """Determine the Python interpreter path from config or environment."""
     # First check if pythonPath is explicitly set in config
@@ -501,7 +487,6 @@ class PyrightClient:
                         },
                         "definition": {"linkSupport": True},
                         "typeDefinition": {"linkSupport": True},
-                        "implementation": {"linkSupport": True},
                         "references": {},
                         "documentHighlight": {},
                         "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},

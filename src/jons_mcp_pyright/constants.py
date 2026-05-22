@@ -39,7 +39,6 @@ class LSPMethods:
     COMPLETION_RESOLVE = "completionItem/resolve"
     DEFINITION = "textDocument/definition"
     TYPE_DEFINITION = "textDocument/typeDefinition"
-    IMPLEMENTATION = "textDocument/implementation"
     REFERENCES = "textDocument/references"
     DOCUMENT_SYMBOL = "textDocument/documentSymbol"
 

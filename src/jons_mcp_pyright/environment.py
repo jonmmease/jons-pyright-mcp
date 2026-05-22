@@ -10,10 +10,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 if TYPE_CHECKING:
     from .lsp_client import PyrightClient
@@ -30,10 +36,17 @@ DEFAULT_PIXI_ENV = "default"
 # Directories to ignore during discovery
 IGNORE_PATTERNS = {
     ".git",
+    ".pixi",
+    ".venv",
+    ".env",
     "node_modules",
     "dist",
+    "site-packages",
+    "dist-packages",
     "__pycache__",
+    "__pypackages__",
     ".tox",
+    ".nox",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
@@ -125,7 +138,7 @@ class EnvironmentState:
     """Path to the virtual environment, if found"""
 
     config: dict[str, Any]
-    """Configuration from pyrightconfig.json"""
+    """Configuration from pyrightconfig.json or [tool.pyright]"""
 
     client: PyrightClient | None = None
     """Lazily initialized Pyright client"""
@@ -157,8 +170,27 @@ class EnvironmentState:
         self.diagnostics.clear()
 
 
+def read_pyproject_toml(project_root: Path) -> dict[str, Any]:
+    """Read pyproject.toml from a project root if it exists."""
+    pyproject_path = project_root / "pyproject.toml"
+    if not pyproject_path.exists():
+        return {}
+    try:
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+            return cast(dict[str, Any], data)
+    except tomllib.TOMLDecodeError as e:
+        logger.warning(f"Failed to parse pyproject.toml at {pyproject_path}: {e}")
+    except OSError as e:
+        logger.warning(f"Failed to read pyproject.toml at {pyproject_path}: {e}")
+    return {}
+
+
 def read_pyright_config(project_root: Path) -> dict[str, Any]:
-    """Read pyrightconfig.json if it exists.
+    """Read pyright configuration from pyrightconfig.json or pyproject.toml.
+
+    pyrightconfig.json takes precedence over [tool.pyright] in pyproject.toml,
+    matching Pyright's own config-file priority.
 
     Args:
         project_root: Path to the project root directory
@@ -175,7 +207,46 @@ def read_pyright_config(project_root: Path) -> dict[str, Any]:
                 return cast(dict[str, Any], config)
         except Exception as e:
             logger.warning(f"Failed to read pyrightconfig.json at {config_path}: {e}")
-    return {}
+
+    pyproject_config = read_pyproject_toml(project_root)
+    tool_config = pyproject_config.get("tool")
+    if not isinstance(tool_config, dict):
+        return {}
+    pyright_config = tool_config.get("pyright")
+    if not isinstance(pyright_config, dict):
+        return {}
+    logger.debug(f"Loaded [tool.pyright] from {project_root}: {pyright_config}")
+    return cast(dict[str, Any], pyright_config)
+
+
+def is_uv_workspace_root(project_root: Path) -> bool:
+    """Return True when project_root has a [tool.uv.workspace] table."""
+    pyproject_config = read_pyproject_toml(project_root)
+    tool_config = pyproject_config.get("tool")
+    if not isinstance(tool_config, dict):
+        return False
+    uv_config = tool_config.get("uv")
+    if not isinstance(uv_config, dict):
+        return False
+    return isinstance(uv_config.get("workspace"), dict)
+
+
+def find_uv_workspace_root(project_root: Path, search_root: Path) -> Path | None:
+    """Find the nearest enclosing uv workspace root inside search_root."""
+    current = project_root.resolve()
+    search_root = search_root.resolve()
+
+    try:
+        current.relative_to(search_root)
+    except ValueError:
+        return None
+
+    while True:
+        if is_uv_workspace_root(current):
+            return current
+        if current == search_root or current == current.parent:
+            return None
+        current = current.parent
 
 
 def discover_project_roots(root: Path) -> list[Path]:
@@ -195,7 +266,8 @@ def discover_project_roots(root: Path) -> list[Path]:
 
     def should_ignore(path: Path) -> bool:
         """Check if a path should be ignored during traversal."""
-        return path.name in IGNORE_PATTERNS or path.name.endswith(".egg-info")
+        ignored_names = IGNORE_PATTERNS | set(get_venv_patterns())
+        return path.name in ignored_names or path.name.endswith(".egg-info")
 
     def scan_directory(directory: Path, depth: int = 0) -> None:
         """Recursively scan for project roots."""
@@ -322,12 +394,20 @@ def discover_environments(root: Path) -> list[EnvironmentState]:
     venv_patterns = get_venv_patterns()
 
     environments: list[EnvironmentState] = []
+    environment_roots: dict[str, Path] = {}
 
     for project_root in project_roots:
+        workspace_root = find_uv_workspace_root(project_root, root)
+        environment_root = workspace_root or project_root
+        environment_roots[str(environment_root)] = environment_root
+
+    for project_root in sorted(
+        environment_roots.values(), key=lambda p: (len(p.parts), str(p))
+    ):
         # Resolve venv for this project
         venv_path = resolve_venv_for_root(project_root, venv_patterns)
 
-        # Read project-specific pyrightconfig.json
+        # Read project-specific pyright configuration
         config = read_pyright_config(project_root)
 
         # Create environment ID from canonical path

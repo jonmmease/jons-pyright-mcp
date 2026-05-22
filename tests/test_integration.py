@@ -302,6 +302,7 @@ async def test_mcp_server_lifecycle():
         assert "definition" in tools
         assert "diagnostics" in tools
         assert "preview_rename" in tools
+        assert "implementation" not in tools
         assert "restart_server" in tools
         assert "list_environments" in tools
 

@@ -320,7 +320,6 @@ def mock_lsp_messages() -> dict[str, Any]:
                 "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
                 "definitionProvider": True,
                 "typeDefinitionProvider": True,
-                "implementationProvider": True,
                 "referencesProvider": True,
                 "documentSymbolProvider": True,
                 "workspaceSymbolProvider": True,

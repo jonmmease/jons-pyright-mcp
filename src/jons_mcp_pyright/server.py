@@ -24,7 +24,6 @@ from .tools import (
     definition,
     diagnostics,
     document_symbols,
-    implementation,
     list_environments,
     preview_rename,
     references,
@@ -131,8 +130,7 @@ MCP server providing Pyright LSP features for Python code intelligence.
 | document_symbols | List all symbols defined in a file |
 | definition | Jump to where a symbol is defined |
 | type_definition | Jump to the type definition of a symbol |
-| implementation | Find implementations of protocols/abstract classes |
-| references | Find all usages of a symbol |
+| references | Find usages of a symbol within the active Pyright environment |
 
 ## Understanding Code
 | Tool | Purpose |
@@ -148,7 +146,7 @@ MCP server providing Pyright LSP features for Python code intelligence.
 ## Refactoring
 | Tool | Purpose |
 |------|---------|
-| preview_rename | Preview all edits needed to rename a symbol; never writes files |
+| preview_rename | Preview rename edits within the active Pyright environment; never writes files |
 
 ## Server Management
 | Tool | Purpose |
@@ -159,7 +157,7 @@ MCP server providing Pyright LSP features for Python code intelligence.
 ## Typical Workflow
 1. Use document_symbols to find code in a file
 2. Call type_info on a value reference to discover its type, fields, and methods
-3. Use definition to navigate to source, references to find usages
+3. Use definition to navigate to source, references to find usages in the active environment
 4. Check diagnostics after making changes
 
 ## Coordinates
@@ -173,6 +171,14 @@ reject missing files, directories, symlink escapes, and paths outside that root.
 ## Pagination
 Tools returning lists (references, document_symbols, diagnostics, type_info methods)
 return max 20 items. Use limit/offset parameters and check hasMore for additional results.
+
+## Environment Scope
+references and preview_rename are scoped to the Pyright environment for the
+input file. In monorepos, callers that need cross-environment results should
+iterate environments or use an external search before applying edits.
+
+uv workspace members are routed to the enclosing [tool.uv.workspace] root so
+Pyright can use the shared workspace environment and dependencies.
 """,
 )
 
@@ -466,7 +472,6 @@ mcp.tool(symbol_info)
 mcp.tool(type_info)
 mcp.tool(definition)
 mcp.tool(type_definition)
-mcp.tool(implementation)
 mcp.tool(references)
 mcp.tool(document_symbols)
 mcp.tool(diagnostics)

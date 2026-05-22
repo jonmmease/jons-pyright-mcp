@@ -100,10 +100,12 @@ inputs.
 - LSP responses may include external locations, but the server does not open or
   read external files for enrichment.
 
-Pyright reads `pyrightconfig.json` and Python project metadata from the selected
-root and discovered nested project roots. Virtual environments are detected from
-common names such as `.venv`, `venv`, `.env`, and Pixi environments under
-`.pixi/envs/<name>`.
+Pyright reads `pyrightconfig.json` or `[tool.pyright]` from the selected root
+and discovered nested project roots. If a discovered project is inside a uv
+workspace, the server uses the nearest enclosing `[tool.uv.workspace]` root as
+the Pyright environment so shared workspace dependencies and `.venv` settings
+resolve correctly. Virtual environments are detected from common names such as
+`.venv`, `venv`, `.env`, and Pixi environments under `.pixi/envs/<name>`.
 
 ## Prerequisites
 
@@ -122,7 +124,6 @@ Navigation and discovery:
 - `document_symbols`
 - `definition`
 - `type_definition`
-- `implementation`
 - `references`
 
 Understanding code:
@@ -145,6 +146,11 @@ All public `line` and `character` inputs and returned ranges are one-based.
 files. `type_info` works best when called on a value reference such as `obj` in
 `obj.method()`, rather than on a class or variable declaration, when member
 discovery is desired.
+
+`references` and `preview_rename` are scoped to the active Pyright environment
+for the input file. In monorepos, callers that need cross-environment results
+should iterate environments or combine the preview with external search before
+applying edits.
 
 Paginated tools return `items`, `totalItems`, `offset`, `limit`, `hasMore`, and
 `nextOffset`. Navigation tools return `items` and `totalItems`. Errors use a

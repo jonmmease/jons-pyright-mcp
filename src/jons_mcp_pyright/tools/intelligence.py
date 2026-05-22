@@ -318,7 +318,7 @@ async def preview_rename(
     new_name: str,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Preview all edits for a project-wide rename without writing files."""
+    """Preview environment-scoped rename edits without writing files."""
     from ..server import ensure_pyright_indexed, resolve_file_for_tool
 
     try:

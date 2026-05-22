@@ -16,7 +16,6 @@ from jons_mcp_pyright.tools import (
     definition,
     diagnostics,
     document_symbols,
-    implementation,
     preview_rename,
     references,
     restart_server,
@@ -172,7 +171,6 @@ class TestCoreLanguageFeatures:
             lambda path: type_info(path, 0, 0),
             lambda path: definition(path, 0, 0),
             lambda path: type_definition(path, 0, 0),
-            lambda path: implementation(path, 0, 0),
             lambda path: references(path, 0, 0),
             lambda path: document_symbols(path),
             lambda path: diagnostics(file_path=path),
@@ -352,33 +350,6 @@ class TestCoreLanguageFeatures:
             ],
             "totalItems": 1,
         }
-
-    @pytest.mark.asyncio
-    async def test_implementation(self, tmp_path: Path, monkeypatch):
-        """Test implementation tool."""
-        monkeypatch.chdir(tmp_path)
-        test_file = tmp_path / "test.py"
-        test_file.write_text("# test")
-
-        mock_locations = [
-            {
-                "uri": "file:///test.py",
-                "range": {"start": {"line": 10, "character": 0}},
-            }
-        ]
-
-        mock_client = create_mock_client()
-        mock_client.request = AsyncMock(return_value=mock_locations)
-
-        setup_mock_manager(mock_client, tmp_path)
-
-        mock_ctx = AsyncMock()
-        result = await implementation(
-            file_path="test.py", line=6, character=5, ctx=mock_ctx
-        )
-
-        assert result["totalItems"] == 1
-        assert result["items"][0]["uri"] == "file:///test.py"
 
     @pytest.mark.asyncio
     async def test_references(self, tmp_path: Path, monkeypatch):

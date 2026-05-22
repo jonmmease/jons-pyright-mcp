@@ -52,7 +52,6 @@ The implementation is essentially JSON-RPC over stdio with header parsing - stra
 - `completion` - Get code completions
 - `definition` - Go to definition
 - `type_definition` - Go to type definition
-- `implementation` - Find implementations
 - `references` - Find all references
 - `document_symbols` - List symbols in document
 - `workspace_symbols` - Search symbols in workspace
