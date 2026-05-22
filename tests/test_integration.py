@@ -140,6 +140,63 @@ another = old_function()
             assert any(edit["uri"] == file_uri for edit in result["edits"])
 
     @pytest.mark.asyncio
+    async def test_preview_rename_includes_imported_references(self, tmp_path: Path):
+        """Rename preview should include references Pyright can find across files."""
+        has_pyright = importlib.util.find_spec("pyright") is not None
+        if not has_pyright and not shutil.which("pyright-langserver"):
+            pytest.skip("pyright not found")
+
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "rename-project"\nversion = "0.1.0"\n'
+        )
+        (tmp_path / "pyrightconfig.json").write_text(
+            '{"include": ["src"], "extraPaths": ["."], "typeCheckingMode": "basic"}'
+        )
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "__init__.py").write_text("")
+        provider_file = src_dir / "provider.py"
+        consumer_file = src_dir / "consumer.py"
+        provider_file.write_text("def query_sql() -> int:\n    return 1\n")
+        consumer_file.write_text(
+            "from .provider import query_sql\n\nvalue = query_sql()\n"
+        )
+
+        manager = PyrightClientManager(tmp_path)
+        try:
+            await manager.start_root_client()
+            server_module.manager = manager
+            server_module.initialization_complete = True
+            await asyncio.sleep(1.5)
+
+            definition_result = await definition(
+                file_path=str(consumer_file),
+                line=1,
+                character=23,
+                ctx=None,
+            )
+            assert definition_result["totalItems"] > 0
+
+            result = await preview_rename(
+                file_path=str(provider_file),
+                line=1,
+                character=5,
+                new_name="renamed_query_sql",
+                ctx=None,
+            )
+
+            if "error" not in result:
+                consumer_uri = consumer_file.resolve().as_uri()
+                assert any(
+                    edit["uri"] == consumer_uri for edit in result["edits"]
+                ), result
+                assert result["totalEdits"] >= 2
+        finally:
+            server_module.initialization_complete = False
+            await manager.shutdown_all()
+            server_module.manager = None
+
+    @pytest.mark.asyncio
     async def test_type_info_on_class_instance(
         self, pyright_manager: PyrightClientManager, temp_python_project: Path
     ):

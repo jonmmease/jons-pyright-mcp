@@ -26,6 +26,7 @@ from ..utils import (
     diagnostic_sort_key,
     exception_to_tool_error,
     file_uri_to_path,
+    locations_to_items,
     public_position_to_lsp,
     resolve_project_file,
     tool_error,
@@ -103,13 +104,45 @@ def _text_edit_sort_key(edit: dict[str, Any]) -> tuple[str, int, int, int, int, 
     )
 
 
-def _normalize_rename_edits(workspace_edit: Any) -> dict[str, Any]:
-    """Normalize WorkspaceEdit changes/documentChanges to preview edits."""
+def _rename_edit_identity(
+    edit: dict[str, Any],
+) -> tuple[str, int, int, int, int, str]:
+    """Build a stable identity for a public rename preview edit."""
+    range_value = edit.get("range", {})
+    start = range_value.get("start", {})
+    end = range_value.get("end", {})
+    return (
+        str(edit.get("uri", "")),
+        int(start.get("line", 0)),
+        int(start.get("character", 0)),
+        int(end.get("line", 0)),
+        int(end.get("character", 0)),
+        str(edit.get("newText", "")),
+    )
+
+
+def _rename_preview_from_edit_items(edits: list[dict[str, Any]]) -> dict[str, Any]:
+    """Validate, deduplicate, and sort public rename preview edits."""
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, int, int, int, str]] = set()
+    for edit in edits:
+        identity = _rename_edit_identity(edit)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(edit)
+
+    deduped.sort(key=_text_edit_sort_key)
+    validated = [RenamePreviewEdit.model_validate(edit) for edit in deduped]
+    return dump_model(RenamePreviewResult(edits=validated, totalEdits=len(validated)))
+
+
+def _workspace_edit_to_public_edits(workspace_edit: Any) -> list[dict[str, Any]]:
+    """Convert WorkspaceEdit changes/documentChanges to public preview edits."""
     if not workspace_edit:
-        return dump_model(RenamePreviewResult(edits=[], totalEdits=0))
+        return []
     if not isinstance(workspace_edit, dict):
-        return tool_error(
-            "rename_unsupported_edit_shape",
+        raise ValueError(
             "Rename returned an unsupported workspace edit shape",
         )
 
@@ -118,28 +151,16 @@ def _normalize_rename_edits(workspace_edit: Any) -> dict[str, Any]:
     changes = workspace_edit.get("changes")
     if changes is not None:
         if not isinstance(changes, dict):
-            return tool_error(
-                "rename_unsupported_edit_shape",
-                "Rename changes must be a URI-to-edits mapping",
-            )
+            raise ValueError("Rename changes must be a URI-to-edits mapping")
         for uri, text_edits in changes.items():
             if not isinstance(text_edits, list):
-                return tool_error(
-                    "rename_unsupported_edit_shape",
-                    "Rename changes must contain text edit arrays",
-                )
+                raise ValueError("Rename changes must contain text edit arrays")
             for text_edit in text_edits:
                 if not isinstance(text_edit, dict):
-                    return tool_error(
-                        "rename_unsupported_edit_shape",
-                        "Rename changes contain an unsupported text edit",
-                    )
+                    raise ValueError("Rename changes contain an unsupported text edit")
                 public_range = _range_to_public(text_edit.get("range"))
                 if not public_range:
-                    return tool_error(
-                        "rename_unsupported_edit_shape",
-                        "Rename text edit is missing a range",
-                    )
+                    raise ValueError("Rename text edit is missing a range")
                 edits.append(
                     {
                         "uri": str(uri),
@@ -151,15 +172,11 @@ def _normalize_rename_edits(workspace_edit: Any) -> dict[str, Any]:
     document_changes = workspace_edit.get("documentChanges")
     if document_changes is not None:
         if not isinstance(document_changes, list):
-            return tool_error(
-                "rename_unsupported_edit_shape",
-                "Rename documentChanges must be a list",
-            )
+            raise ValueError("Rename documentChanges must be a list")
         for document_change in document_changes:
             if not isinstance(document_change, dict) or "edits" not in document_change:
-                return tool_error(
-                    "rename_unsupported_edit_shape",
-                    "Rename documentChanges may only contain text document edits",
+                raise ValueError(
+                    "Rename documentChanges may only contain text document edits"
                 )
             text_document = document_change.get("textDocument")
             uri = (
@@ -168,28 +185,18 @@ def _normalize_rename_edits(workspace_edit: Any) -> dict[str, Any]:
                 else document_change.get("uri")
             )
             if not uri:
-                return tool_error(
-                    "rename_unsupported_edit_shape",
-                    "Rename text document edit is missing a URI",
-                )
+                raise ValueError("Rename text document edit is missing a URI")
             text_edits = document_change.get("edits")
             if not isinstance(text_edits, list):
-                return tool_error(
-                    "rename_unsupported_edit_shape",
-                    "Rename text document edit must contain an edits list",
-                )
+                raise ValueError("Rename text document edit must contain an edits list")
             for text_edit in text_edits:
                 if not isinstance(text_edit, dict):
-                    return tool_error(
-                        "rename_unsupported_edit_shape",
-                        "Rename documentChanges contain an unsupported edit",
+                    raise ValueError(
+                        "Rename documentChanges contain an unsupported edit"
                     )
                 public_range = _range_to_public(text_edit.get("range"))
                 if not public_range:
-                    return tool_error(
-                        "rename_unsupported_edit_shape",
-                        "Rename text edit is missing a range",
-                    )
+                    raise ValueError("Rename text edit is missing a range")
                 edits.append(
                     {
                         "uri": str(uri),
@@ -198,9 +205,33 @@ def _normalize_rename_edits(workspace_edit: Any) -> dict[str, Any]:
                     }
                 )
 
-    edits.sort(key=_text_edit_sort_key)
-    validated = [RenamePreviewEdit.model_validate(edit) for edit in edits]
-    return dump_model(RenamePreviewResult(edits=validated, totalEdits=len(validated)))
+    return edits
+
+
+def _reference_locations_to_rename_edits(
+    references_response: Any, new_name: str
+) -> list[dict[str, Any]]:
+    """Convert reference locations into public rename preview edits."""
+    return [
+        {"uri": item["uri"], "range": item["range"], "newText": new_name}
+        for item in locations_to_items(references_response)
+    ]
+
+
+def _normalize_rename_edits(
+    workspace_edit: Any, supplemental_edits: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Normalize WorkspaceEdit plus optional supplemental edits to preview edits."""
+    try:
+        edits = _workspace_edit_to_public_edits(workspace_edit)
+    except ValueError as exc:
+        message = exc.args[0] if exc.args else "Rename returned an unsupported shape"
+        return tool_error("rename_unsupported_edit_shape", str(message))
+
+    if supplemental_edits:
+        edits.extend(supplemental_edits)
+
+    return _rename_preview_from_edit_items(edits)
 
 
 async def diagnostics(
@@ -318,7 +349,7 @@ async def preview_rename(
     new_name: str,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Preview environment-scoped rename edits without writing files."""
+    """Preview workspace-aware rename edits without writing files."""
     from ..server import ensure_pyright_indexed, resolve_file_for_tool
 
     try:
@@ -358,6 +389,18 @@ async def preview_rename(
         return tool_error("rename_not_available", "Cannot rename at this position")
 
     try:
+        references_result = await client.request(
+            LSPMethods.REFERENCES,
+            {
+                "textDocument": {"uri": resolved.uri},
+                "position": position,
+                "context": {"includeDeclaration": True},
+            },
+        )
+    except LSPRequestError as exc:
+        return exception_to_tool_error(exc)
+
+    try:
         result = await client.request(
             LSPMethods.RENAME,
             {
@@ -369,4 +412,7 @@ async def preview_rename(
     except LSPRequestError as exc:
         return exception_to_tool_error(exc)
 
-    return _normalize_rename_edits(result)
+    supplemental_edits = _reference_locations_to_rename_edits(
+        references_result, new_name
+    )
+    return _normalize_rename_edits(result, supplemental_edits=supplemental_edits)

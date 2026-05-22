@@ -53,7 +53,9 @@ uv build --wheel --out-dir /tmp/jons-mcp-pyright-wheel
 - `preview_rename` returns a sorted edit preview and does not write files.
 - Call `type_info` on value references when member discovery is desired.
 - `references` and `preview_rename` are scoped to the active Pyright
-  environment for the input file, not every environment in a monorepo.
+  workspace/environment for the input file, not every environment in a monorepo.
+- `preview_rename` should supplement Pyright rename edits with same-workspace
+  reference ranges so import callers are included in the preview.
 - Discovered uv workspace member projects should route to the enclosing
   `[tool.uv.workspace]` root so shared workspace dependencies resolve.
 

@@ -147,10 +147,12 @@ files. `type_info` works best when called on a value reference such as `obj` in
 `obj.method()`, rather than on a class or variable declaration, when member
 discovery is desired.
 
-`references` and `preview_rename` are scoped to the active Pyright environment
-for the input file. In monorepos, callers that need cross-environment results
-should iterate environments or combine the preview with external search before
-applying edits.
+`references` and `preview_rename` are scoped to the active Pyright
+workspace/environment for the input file. `preview_rename` supplements Pyright's
+rename edit with reference locations from the same workspace so imported callers
+are included in the preview. In monorepos, callers that need results beyond that
+workspace should iterate environments or combine the preview with external
+search before applying edits.
 
 Paginated tools return `items`, `totalItems`, `offset`, `limit`, `hasMore`, and
 `nextOffset`. Navigation tools return `items` and `totalItems`. Errors use a

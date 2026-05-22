@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from test_mcp_tools import create_mock_client, setup_mock_manager
 
+from jons_mcp_pyright.constants import LSPMethods
 from jons_mcp_pyright.tools import preview_rename
 from jons_mcp_pyright.tools.intelligence import _normalize_rename_edits
 
@@ -101,6 +102,7 @@ async def test_preview_rename_does_not_write_files(tmp_path: Path):
     mock_client.request = AsyncMock(
         side_effect=[
             {"range": {"start": {"line": 0, "character": 0}}},
+            [],
             {
                 "changes": {
                     test_file.resolve().as_uri(): [
@@ -127,3 +129,109 @@ async def test_preview_rename_does_not_write_files(tmp_path: Path):
 
     assert result["totalEdits"] == 1
     assert test_file.read_text() == "old_name = 1\nprint(old_name)\n"
+
+
+@pytest.mark.asyncio
+async def test_preview_rename_supplements_missing_reference_edits(tmp_path: Path):
+    """Reference ranges are added when Pyright rename omits workspace callers."""
+    declaration_file = tmp_path / "provider.py"
+    caller_file = tmp_path / "consumer.py"
+    declaration_file.write_text("def query_sql():\n    pass\n")
+    caller_file.write_text("from provider import query_sql\nquery_sql()\n")
+
+    declaration_uri = declaration_file.resolve().as_uri()
+    caller_uri = caller_file.resolve().as_uri()
+
+    mock_client = create_mock_client()
+    mock_client.request = AsyncMock(
+        side_effect=[
+            {
+                "range": {
+                    "start": {"line": 0, "character": 4},
+                    "end": {"line": 0, "character": 13},
+                }
+            },
+            [
+                {
+                    "uri": declaration_uri,
+                    "range": {
+                        "start": {"line": 0, "character": 4},
+                        "end": {"line": 0, "character": 13},
+                    },
+                },
+                {
+                    "uri": caller_uri,
+                    "range": {
+                        "start": {"line": 0, "character": 21},
+                        "end": {"line": 0, "character": 30},
+                    },
+                },
+                {
+                    "uri": caller_uri,
+                    "range": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 9},
+                    },
+                },
+            ],
+            {
+                "changes": {
+                    declaration_uri: [
+                        {
+                            "range": {
+                                "start": {"line": 0, "character": 4},
+                                "end": {"line": 0, "character": 13},
+                            },
+                            "newText": "renamed_query_sql",
+                        }
+                    ]
+                }
+            },
+        ]
+    )
+    setup_mock_manager(mock_client, tmp_path)
+
+    result = await preview_rename(
+        file_path="provider.py",
+        line=1,
+        character=5,
+        new_name="renamed_query_sql",
+    )
+
+    assert result == {
+        "edits": [
+            {
+                "uri": caller_uri,
+                "range": {
+                    "start": {"line": 1, "character": 22},
+                    "end": {"line": 1, "character": 31},
+                },
+                "newText": "renamed_query_sql",
+            },
+            {
+                "uri": caller_uri,
+                "range": {
+                    "start": {"line": 2, "character": 1},
+                    "end": {"line": 2, "character": 10},
+                },
+                "newText": "renamed_query_sql",
+            },
+            {
+                "uri": declaration_uri,
+                "range": {
+                    "start": {"line": 1, "character": 5},
+                    "end": {"line": 1, "character": 14},
+                },
+                "newText": "renamed_query_sql",
+            },
+        ],
+        "totalEdits": 3,
+    }
+    assert declaration_file.read_text() == "def query_sql():\n    pass\n"
+    assert caller_file.read_text() == "from provider import query_sql\nquery_sql()\n"
+    requested_methods = [call.args[0] for call in mock_client.request.await_args_list]
+    assert requested_methods == [
+        LSPMethods.PREPARE_RENAME,
+        LSPMethods.REFERENCES,
+        LSPMethods.RENAME,
+    ]

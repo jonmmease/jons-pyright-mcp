@@ -69,7 +69,9 @@ src/jons_mcp_pyright/
 - Public `line` and `character` inputs and returned ranges are one-based.
 - Call `type_info` on value references when member discovery is desired.
 - `references` and `preview_rename` are scoped to the active Pyright
-  environment for the input file, not every environment in a monorepo.
+  workspace/environment for the input file, not every environment in a monorepo.
+- `preview_rename` should supplement Pyright rename edits with same-workspace
+  reference ranges so import callers are included in the preview.
 - Discovered uv workspace member projects should route to the enclosing
   `[tool.uv.workspace]` root so shared workspace dependencies resolve.
 

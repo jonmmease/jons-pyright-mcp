@@ -504,6 +504,7 @@ class TestCodeIntelligence:
         mock_client.request = AsyncMock()
         mock_client.request.side_effect = [
             {"range": {"start": {"line": 10}}},  # prepareRename
+            [],  # references supplement
             mock_edit,  # rename
         ]
 

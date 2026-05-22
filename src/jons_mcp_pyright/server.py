@@ -130,7 +130,7 @@ MCP server providing Pyright LSP features for Python code intelligence.
 | document_symbols | List all symbols defined in a file |
 | definition | Jump to where a symbol is defined |
 | type_definition | Jump to the type definition of a symbol |
-| references | Find usages of a symbol within the active Pyright environment |
+| references | Find usages of a symbol within the active Pyright workspace/environment |
 
 ## Understanding Code
 | Tool | Purpose |
@@ -146,7 +146,7 @@ MCP server providing Pyright LSP features for Python code intelligence.
 ## Refactoring
 | Tool | Purpose |
 |------|---------|
-| preview_rename | Preview rename edits within the active Pyright environment; never writes files |
+| preview_rename | Preview reference-backed rename edits within the active Pyright workspace; never writes files |
 
 ## Server Management
 | Tool | Purpose |
@@ -157,7 +157,7 @@ MCP server providing Pyright LSP features for Python code intelligence.
 ## Typical Workflow
 1. Use document_symbols to find code in a file
 2. Call type_info on a value reference to discover its type, fields, and methods
-3. Use definition to navigate to source, references to find usages in the active environment
+3. Use definition to navigate to source, references to find usages in the active workspace
 4. Check diagnostics after making changes
 
 ## Coordinates
@@ -173,9 +173,10 @@ Tools returning lists (references, document_symbols, diagnostics, type_info meth
 return max 20 items. Use limit/offset parameters and check hasMore for additional results.
 
 ## Environment Scope
-references and preview_rename are scoped to the Pyright environment for the
-input file. In monorepos, callers that need cross-environment results should
-iterate environments or use an external search before applying edits.
+references and preview_rename are scoped to the Pyright workspace/environment
+for the input file. In monorepos, callers that need results beyond that
+workspace should iterate environments or use an external search before applying
+edits.
 
 uv workspace members are routed to the enclosing [tool.uv.workspace] root so
 Pyright can use the shared workspace environment and dependencies.
